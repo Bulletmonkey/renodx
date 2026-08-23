@@ -78,6 +78,7 @@ struct ClientImageState {
   uint32_t width = 0u;
   uint32_t height = 0u;
   bool clone_active = false;
+  bool preconverted = false;
   bool pass_initialized = false;
   bool pq_render_target_exempt = false;
   renodx::utils::render::RenderPass pq_pass;
@@ -318,6 +319,7 @@ inline bool RegisterClientImage(
   state->width = width;
   state->height = height;
   state->clone_active = clone_active;
+  state->preconverted = false;
   return true;
 }
 
@@ -422,26 +424,6 @@ inline bool RenderClientImage(
   return rendered;
 }
 
-inline bool ConvertClientImage(
-    reshade::api::command_list* cmd_list,
-    ClientImageState* state) {
-  if (state == nullptr) return false;
-  const bool is_sdr =
-      state->original_format == reshade::api::format::r8g8b8a8_unorm;
-  if (!is_sdr) return !state->clone_active;
-  if (!state->clone_active || !SetClientCloneActive(state, false)) return false;
-  const bool converted = RenderClientImage(
-      cmd_list,
-      state,
-      &state->pq_pass,
-      &state->pass_initialized,
-      &state->pq_render_target_exempt,
-      pixel_shader,
-      true);
-  if (!converted) SetClientCloneActive(state, true);
-  return converted;
-}
-
 inline void OnBarrier(
     reshade::api::command_list* cmd_list,
     uint32_t count,
@@ -468,11 +450,12 @@ inline void OnBarrier(
     const auto found = client_images.find(resources[index].handle);
     if (found == client_images.end()) continue;
     auto* state = found->second.get();
+    if (state == nullptr) continue;
     if (state->original_format != reshade::api::format::r10g10b10a2_unorm) {
       continue;
     }
-
     if (!state->clone_active || !SetClientCloneActive(state, false)) continue;
+
     outer_conversion_in_progress = true;
     const bool converted = RenderClientImage(
         cmd_list,
@@ -483,8 +466,10 @@ inline void OnBarrier(
         pixel_shader,
         true);
     outer_conversion_in_progress = false;
+    const bool reactivated = SetClientCloneActive(state, true);
+    state->preconverted = converted && reactivated;
 
-    if (converted) {
+    if (state->preconverted) {
       static std::once_flag logged;
       std::call_once(logged, [] {
         reshade::log::message(
@@ -492,7 +477,6 @@ inline void OnBarrier(
             "[RenoDX][client-fp16] Encoded HDR10 on the game's graphics command buffer before DLSS-G");
       });
     } else {
-      SetClientCloneActive(state, true);
       static std::once_flag logged;
       std::call_once(logged, [] {
         reshade::log::message(
@@ -501,6 +485,33 @@ inline void OnBarrier(
       });
     }
   }
+}
+
+inline bool ConvertClientImage(
+    reshade::api::command_list* cmd_list,
+    ClientImageState* state) {
+  if (state == nullptr) return false;
+  const bool is_sdr =
+      state->original_format == reshade::api::format::r8g8b8a8_unorm;
+  if (!is_sdr) {
+    if (!state->clone_active || !state->preconverted
+        || !SetClientCloneActive(state, false)) {
+      return false;
+    }
+    state->preconverted = false;
+    return true;
+  }
+  if (!state->clone_active || !SetClientCloneActive(state, false)) return false;
+  const bool converted = RenderClientImage(
+      cmd_list,
+      state,
+      &state->pq_pass,
+      &state->pass_initialized,
+      &state->pq_render_target_exempt,
+      pixel_shader,
+      true);
+  if (!converted) SetClientCloneActive(state, true);
+  return converted;
 }
 
 inline bool ManageClientImage(
@@ -519,10 +530,12 @@ inline bool ManageClientImage(
   const auto found = client_images.find(image);
   if (found == client_images.end()) return false;
   if (operation == renodx::streamline_bridge::kClientImageOperationActivate) {
+    auto* state = found->second.get();
     if (command_buffer != 0u
-        || !SetClientCloneActive(found->second.get(), true)) {
+        || !SetClientCloneActive(state, true)) {
       return false;
     }
+    state->preconverted = false;
     return true;
   }
   if (operation != renodx::streamline_bridge::kClientImageOperationConvert
