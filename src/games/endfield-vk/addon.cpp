@@ -2318,6 +2318,30 @@ void OnPresent(reshade::api::command_queue* queue,
 }
 
 bool initialized = false;
+bool renodx_runtime_attached = false;
+
+void UseRenoDXRuntime(DWORD fdw_reason) {
+  renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
+    SetVfxBoostTrackingEnabled(IsVisible(shader_injection.perchannelblowout));
+  }
+  SyncSwapChainInjection();
+  renodx::mods::swapchain::Use(fdw_reason, &swap_chain_injection);
+  renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
+  renodx::utils::state::Use(fdw_reason);
+}
+
+bool OnCreateVulkanDevice(reshade::api::device_api api, uint32_t& api_version) {
+  (void)api_version;
+  if (api != reshade::api::device_api::vulkan || renodx_runtime_attached) return false;
+
+  renodx_runtime_attached = true;
+  reshade::log::message(
+      reshade::log::level::info,
+      "Initializing RenoDX runtime for the Vulkan device.");
+  UseRenoDXRuntime(DLL_PROCESS_ATTACH);
+  return false;
+}
 
 }  // namespace
 
@@ -2530,8 +2554,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         initialized = true;
       }
 
+      reshade::register_event<reshade::addon_event::create_device>(OnCreateVulkanDevice);
+
       break;
     case DLL_PROCESS_DETACH:
+      reshade::unregister_event<reshade::addon_event::create_device>(OnCreateVulkanDevice);
       reshade::unregister_event<reshade::addon_event::draw>(OnDraw);
       reshade::unregister_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
       reshade::unregister_event<reshade::addon_event::reset_command_list>(
@@ -2559,14 +2586,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       break;
   }
 
-  renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
-  if (fdw_reason == DLL_PROCESS_ATTACH) {
-    SetVfxBoostTrackingEnabled(IsVisible(shader_injection.perchannelblowout));
+  if (fdw_reason == DLL_PROCESS_DETACH && renodx_runtime_attached) {
+    UseRenoDXRuntime(DLL_PROCESS_DETACH);
+    renodx_runtime_attached = false;
   }
-  SyncSwapChainInjection();
-  renodx::mods::swapchain::Use(fdw_reason, &swap_chain_injection);
-  renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
-  renodx::utils::state::Use(fdw_reason);
 
   if (fdw_reason == DLL_PROCESS_DETACH) {
     reshade::unregister_addon(h_module);
