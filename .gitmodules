@@ -5,7 +5,7 @@
 [submodule "external/Streamline"]
   path = external/Streamline
 	url = https://github.com/ItsTheSewerRat/Streamline.git
-	branch = endfield-vk-fg
+	branch = endfield-fg
 
 [submodule "external/gtl"]
   path = external/gtl

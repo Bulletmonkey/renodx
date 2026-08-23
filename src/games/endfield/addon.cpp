@@ -2354,8 +2354,8 @@ bool OnCreateVulkanDevice(reshade::api::device_api api, uint32_t& api_version) {
 
 }  // namespace
 
-extern "C" __declspec(dllexport) constexpr const char* NAME = "RenoDX: Arknights Endfield (Vulkan)";
-extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION = "RenoDX Vulkan renderer port for Arknights: Endfield";
+extern "C" __declspec(dllexport) constexpr const char* NAME = "RenoDX: Arknights Endfield (Vulkan Frame Generation)";
+extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION = "RenoDX Vulkan frame generation build for Arknights: Endfield";
 
 extern "C" __declspec(dllexport) uint32_t __cdecl
 RenoDX_Streamline_IsHDR10EnabledV1() noexcept {

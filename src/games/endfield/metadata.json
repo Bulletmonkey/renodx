@@ -1,7 +1,7 @@
 {
   "$schema": "https://cdn.jsdelivr.net/gh/clshortfuse/renodx/renodx-metadata-schema.json",
-  "id": "endfield",
-  "title": "Arknights: Endfield (Vulkan)",
+  "id": "endfield-fg",
+  "title": "Arknights: Endfield (Vulkan Frame Generation)",
   "header": "https://cdn1.epicgames.com/spt-assets/3dc91103cd1b492c8ce095fea4e07c5f/arknightsendfield-47ajg.png?resize=1&w=415&h=215",
   "maintainers": [
     "Spiwar",
