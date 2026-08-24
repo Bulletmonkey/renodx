@@ -89,6 +89,37 @@ static float2 _5;
 static float4 _7;
 static float2 _8;
 
+bool IsLatencyBarVertex(float2 position)
+{
+    float aspect = UI_ASPECT_RATIO;
+    float base_y = 21.5f - 1200.0f * aspect;
+    float2 latency_bar_vertices[12] = {
+        float2(-1167.0f, base_y),
+        float2(-1167.0f, 30.5f - 1200.0f * aspect),
+        float2(-1162.0f, 30.5f - 1200.0f * aspect),
+        float2(-1162.0f, base_y),
+        float2(-1160.5f, base_y),
+        float2(-1160.5f, 34.5f - 1200.0f * aspect),
+        float2(-1155.5f, 34.5f - 1200.0f * aspect),
+        float2(-1155.5f, base_y),
+        float2(-1154.0f, base_y),
+        float2(-1154.0f, 38.5f - 1200.0f * aspect),
+        float2(-1149.0f, 38.5f - 1200.0f * aspect),
+        float2(-1149.0f, base_y),
+    };
+
+    [unroll]
+    for (int i = 0; i < 12; i++)
+    {
+        float2 delta = latency_bar_vertices[i] - position;
+        if (dot(delta, delta) < 1.0f)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 struct SPIRV_Cross_Input
 {
     [[vk::location(0)]] float4 _3 : TEXCOORD0;
@@ -170,14 +201,13 @@ SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
     _4 = stage_input._4;
     _5 = stage_input._5;
     vert_main();
-    if (LATENCY_BAR_DRAW_OPACITY < 0.5f)
+    float2 d3d_ndc = float2(gl_Position.x, -gl_Position.y) / max(abs(gl_Position.w), 0.00001f);
+    if (PING_TEXT_OPACITY < 0.5f
+        && IsLatencyBarVertex(_3.xy)
+        && (d3d_ndc.x >= -0.99f && d3d_ndc.x <= -0.93f)
+        && (d3d_ndc.y >= -0.99f && d3d_ndc.y <= -0.90f))
     {
-        float2 d3d_ndc = float2(gl_Position.x, -gl_Position.y) / max(abs(gl_Position.w), 0.00001f);
-        if ((d3d_ndc.x >= -0.99f && d3d_ndc.x <= -0.93f)
-            && (d3d_ndc.y >= -0.99f && d3d_ndc.y <= -0.90f))
-        {
-            gl_Position = float4(2.0f, 2.0f, 0.0f, 1.0f);
-        }
+        gl_Position = float4(2.0f, 2.0f, 0.0f, 1.0f);
     }
     SPIRV_Cross_Output stage_output;
     stage_output.gl_Position = gl_Position;
