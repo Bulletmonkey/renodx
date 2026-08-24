@@ -45,6 +45,9 @@ struct SPIRV_Cross_Input
 {
     float4 _3 : TEXCOORD0;
     float2 _4 : TEXCOORD1;
+    // RenoDX code start
+    float4 position : SV_Position;
+    // RenoDX code end
 };
 
 struct SPIRV_Cross_Output
@@ -71,6 +74,19 @@ SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
     _3 = stage_input._3;
     _4 = stage_input._4;
     frag_main();
+    // RenoDX code start: hide the latency bar while it is rendered into the transition UI target.
+    float2 uv_pixel_size = fwidth(_4);
+    bool is_transition_latency_bar = stage_input.position.x >= 20.0f
+        && stage_input.position.x <= 60.0f
+        && stage_input.position.y >= 15.0f
+        && stage_input.position.y <= 50.0f
+        && uv_pixel_size.x >= 0.1f
+        && uv_pixel_size.y >= 0.05f;
+    if (PING_TEXT_OPACITY < 0.5f && is_transition_latency_bar)
+    {
+        _5 = 0.0f;
+    }
+    // RenoDX code end
     // RenoDX code start: hide this UI pass when the UI visibility control is disabled.
     if (UI_VISIBILITY < 0.5f)
     {
