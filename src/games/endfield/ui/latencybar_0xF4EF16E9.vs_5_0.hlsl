@@ -20,6 +20,32 @@ cbuffer cb0 : register(b0) {
   float4 cb0[21];
 }
 
+bool IsLatencyBarVertex(float2 position) {
+  float aspect = UI_ASPECT_RATIO;
+  float base_y = 21.5f - 1200.0f * aspect;
+  float2 latency_bar_vertices[12] = {
+      float2(-1167.0f, base_y),
+      float2(-1167.0f, 30.5f - 1200.0f * aspect),
+      float2(-1162.0f, 30.5f - 1200.0f * aspect),
+      float2(-1162.0f, base_y),
+      float2(-1160.5f, base_y),
+      float2(-1160.5f, 34.5f - 1200.0f * aspect),
+      float2(-1155.5f, 34.5f - 1200.0f * aspect),
+      float2(-1155.5f, base_y),
+      float2(-1154.0f, base_y),
+      float2(-1154.0f, 38.5f - 1200.0f * aspect),
+      float2(-1149.0f, 38.5f - 1200.0f * aspect),
+      float2(-1149.0f, base_y),
+  };
+
+  [unroll]
+  for (int i = 0; i < 12; i++) {
+    float2 delta = latency_bar_vertices[i] - position;
+    if (dot(delta, delta) < 1.0f) return true;
+  }
+  return false;
+}
+
 void main(
     float4 v0 : POSITION0,
     float4 v1 : COLOR0,
@@ -86,11 +112,11 @@ void main(
   r0.xy = v0.xy * float2(2, 2) + -r0.xy;
   o4.xy = r0.xy + -r0.zw;
 
-  if (LATENCY_BAR_DRAW_OPACITY < 0.5f) {
-    float2 ndc = o0.xy / max(abs(o0.w), 0.00001f);
-    if ((ndc.x >= -0.99f && ndc.x <= -0.93f)
-        && (ndc.y >= -0.99f && ndc.y <= -0.90f)) {
-      o0 = float4(2.0f, 2.0f, 0.0f, 1.0f);
-    }
+  float2 ndc = o0.xy / max(abs(o0.w), 0.00001f);
+  if (PING_TEXT_OPACITY < 0.5f
+      && IsLatencyBarVertex(v0.xy)
+      && (ndc.x >= -0.99f && ndc.x <= -0.93f)
+      && (ndc.y >= -0.99f && ndc.y <= -0.90f)) {
+    o0 = float4(2.0f, 2.0f, 0.0f, 1.0f);
   }
 }
