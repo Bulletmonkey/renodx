@@ -2216,6 +2216,14 @@ bool OnDrawIndexed(
   return true;
 }
 
+void OnInitSwapChainOutput(reshade::api::swapchain* swapchain, bool) {
+  if (!renodx::mods::swapchain::IsUpgraded(swapchain)) return;
+
+  swap_chain_output_initialized = false;
+  swap_chain_target_sync_pending = true;
+  SetActiveSwapChainEncoding(requested_swap_chain_encoding);
+}
+
 void OnPresent(reshade::api::command_queue* queue,
                reshade::api::swapchain* swapchain,
                const reshade::api::rect* source_rect,
@@ -2349,6 +2357,7 @@ bool OnCreateVulkanDevice(reshade::api::device_api api, uint32_t& api_version) {
       reshade::log::level::info,
       "Initializing RenoDX runtime for the Vulkan device.");
   UseRenoDXRuntime(DLL_PROCESS_ATTACH);
+  reshade::register_event<reshade::addon_event::init_swapchain>(OnInitSwapChainOutput);
   return false;
 }
 
@@ -2537,10 +2546,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
             .old_format = reshade::api::format::r8g8b8a8_unorm,
             .new_format = reshade::api::format::r16g16b16a16_float,
-            .ignore_size = false,
+            .ignore_size = true,
             .view_upgrades = renodx::utils::resource::VIEW_UPGRADES_RGBA16F,
             .usage_include = reshade::api::resource_usage::render_target,
-            .name = "Endfield full-resolution linear intermediate direct Vulkan upgrade",
+            .name = "Endfield all-size linear intermediate Vulkan upgrade",
         });
 
         constexpr std::array<uint32_t, 8> reshade_before_ui_crcs = {
@@ -2644,6 +2653,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       break;
     case DLL_PROCESS_DETACH:
       reshade::unregister_event<reshade::addon_event::create_device>(OnCreateVulkanDevice);
+      reshade::unregister_event<reshade::addon_event::init_swapchain>(OnInitSwapChainOutput);
       reshade::unregister_event<reshade::addon_event::draw>(OnDraw);
       reshade::unregister_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
       reshade::unregister_event<reshade::addon_event::reset_command_list>(
