@@ -1733,20 +1733,15 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
         .old_format = reshade::api::format::r8g8b8a8_typeless,
         .new_format = reshade::api::format::r16g16b16a16_float,
-        .ignore_size = false,
+        .ignore_size = true,
         //.use_resource_view_cloning = true,
-        .aspect_ratio = static_cast<float>(renodx::mods::swapchain::SwapChainUpgradeTarget::BACK_BUFFER),
-        .aspect_ratio_tolerance = 0.02f,
         .usage_include = reshade::api::resource_usage::render_target,
         });
-        // Need aspect ratio upgrade or grass will be broken
         renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
             .old_format = reshade::api::format::r8g8b8a8_unorm,
             .new_format = reshade::api::format::r16g16b16a16_float,
-            .ignore_size = false,
+            .ignore_size = true,
             //.use_resource_view_cloning = true,
-            .aspect_ratio = static_cast<float>(renodx::mods::swapchain::SwapChainUpgradeTarget::BACK_BUFFER),
-            .aspect_ratio_tolerance = 0.02f,
             .usage_include = reshade::api::resource_usage::render_target,
         });
         /*
