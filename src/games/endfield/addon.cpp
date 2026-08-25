@@ -516,6 +516,7 @@ struct UiDrawDetectionState {
   bool is_ping_input_candidate = false;
   bool is_ping_drawn = false;
   bool is_uid_input_candidate = false;
+  bool is_latency_bar_draw_candidate = false;
   uint32_t draw_call_vertex_count = 0;
 };
 
@@ -1122,6 +1123,20 @@ bool OnPingDraw(reshade::api::command_list* cmd_list) {
   } else {
     state.is_ping_drawn = false;
   }
+  return true;
+}
+
+bool InjectLatencyBarDrawOpacity(reshade::api::command_list* cmd_list) {
+  bool is_latency_bar_draw_candidate = false;
+  {
+    const std::lock_guard lock(ui_draw_detection_mutex);
+    const auto state = ui_draw_detection_states.find(GetCommandListKey(cmd_list));
+    is_latency_bar_draw_candidate = state != ui_draw_detection_states.end()
+        && state->second.is_latency_bar_draw_candidate;
+  }
+  shader_injection.latency_bar_draw_opacity = is_latency_bar_draw_candidate
+      ? shader_injection.ping_text_opacity
+      : 1.f;
   return true;
 }
 
@@ -2088,7 +2103,9 @@ bool OnDraw(
     const std::lock_guard lock(ui_draw_detection_mutex);
     auto& state = ui_draw_detection_states[GetCommandListKey(cmd_list)];
     state.draw_call_vertex_count = vertex_count;
+    state.is_latency_bar_draw_candidate = false;
   }
+  shader_injection.latency_bar_draw_opacity = 1.f;
   return false;
 }
 
@@ -2100,6 +2117,12 @@ bool OnDrawIndexed(
     int32_t vertex_offset,
     uint32_t first_instance) {
   const uint64_t command_list_key = GetCommandListKey(cmd_list);
+  {
+    const std::lock_guard lock(ui_draw_detection_mutex);
+    ui_draw_detection_states[command_list_key].is_latency_bar_draw_candidate = false;
+  }
+  shader_injection.latency_bar_draw_opacity = 1.f;
+
   constexpr uint32_t PING_INDEX_COUNT = 18;
   constexpr uint32_t PING_FIRST_INDEX = 0;
   constexpr int32_t PING_VERTEX_OFFSET = 0;
@@ -2152,6 +2175,7 @@ bool OnDrawIndexed(
     {
       const std::lock_guard lock(ui_draw_detection_mutex);
       auto& state = ui_draw_detection_states[command_list_key];
+      state.is_latency_bar_draw_candidate = true;
       state.is_ping_input_candidate = state.draw_call_vertex_count == 0;
       if (state.is_ping_input_candidate) {
         state.is_ping_drawn = true;
@@ -2261,6 +2285,8 @@ void OnPresent(reshade::api::command_queue* queue,
   if (bb.type != reshade::api::resource_type::unknown) {
     shader_injection.ui_aspect_ratio = static_cast<float>(bb.texture.height) / static_cast<float>(bb.texture.width);
   }
+
+  shader_injection.latency_bar_draw_opacity = 1.f;
 
   float current_tech_test = shader_injection.tech_test_look;
   if (current_tech_test != prev_tech_test_look) {
@@ -2588,6 +2614,13 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           RegisterUiVisibilityBypassShader(crc);
         }
         RegisterUidBypassShader(kVulkanUidPixelShaderHash);
+
+        {
+          auto it = custom_shaders.find(kVulkanPingVertexShaderHash);
+          if (it != custom_shaders.end()) {
+            it->second.on_inject = InjectLatencyBarDrawOpacity;
+          }
+        }
 
         {
           auto it = custom_shaders.find(kVulkanPingPixelShaderHash);
