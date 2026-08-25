@@ -267,6 +267,7 @@ struct __declspec(uuid("019bf1c8-074a-7e13-b353-54ce3ceec3de")) VfxCommandListDa
   bool is_ping_drawn = false;
   bool is_uid_input_candidate = false;
   uint32_t draw_call_vertex_count = 0u;
+  float latency_bar_draw_opacity = 1.f;
 };
 
 struct VfxBoostMatch {
@@ -358,6 +359,7 @@ void OnResetVfxCommandList(reshade::api::command_list* cmd_list) {
     data->is_ping_drawn = false;
     data->is_uid_input_candidate = false;
     data->draw_call_vertex_count = 0u;
+    data->latency_bar_draw_opacity = 1.f;
   }
 }
 
@@ -464,6 +466,14 @@ bool OnUidOrUiVisibilityDraw(reshade::api::command_list* cmd_list) {
 
 bool KeepOriginalShader(reshade::api::command_list* cmd_list) {
   return false;
+}
+
+bool OnLatencyBarInject(reshade::api::command_list* cmd_list) {
+  auto* data = renodx::utils::data::Get<VfxCommandListData>(cmd_list);
+  shader_injection.latency_bar_draw_opacity = data != nullptr
+      ? data->latency_bar_draw_opacity
+      : 1.f;
+  return true;
 }
 
 void RestoreVFXBoostShader(
@@ -1386,6 +1396,7 @@ bool OnDraw(
   auto* data = renodx::utils::data::Get<VfxCommandListData>(cmd_list);
   if (data != nullptr) {
     data->draw_call_vertex_count = vertex_count;
+    data->latency_bar_draw_opacity = 1.f;
   }
   return false;
 }
@@ -1417,6 +1428,7 @@ bool OnDrawIndexed(
 
   data->is_ping_input_candidate = false;
   data->is_uid_input_candidate = false;
+  data->latency_bar_draw_opacity = 1.f;
   if (IsVisible(shader_injection.ui_visibility)
       && !ping_geometry_candidate
       && !uid_geometry_candidate) {
@@ -1452,6 +1464,9 @@ bool OnDrawIndexed(
                                           (pixel_shader_hash == PING_PIXEL_SHADER_HASH);
   data->is_ping_input_candidate = latency_bar_draw_candidate
                                && data->draw_call_vertex_count == 0u;
+  data->latency_bar_draw_opacity = latency_bar_draw_candidate
+      ? shader_injection.ping_text_opacity
+      : 1.f;
 
   if (latency_bar_draw_candidate) {
     if (data->is_ping_input_candidate) {
@@ -1818,6 +1833,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         RegisterUidBypassShader(0xC2B8AB6Bu);
 
         // Ping/latency bar shader
+        {
+          auto it = custom_shaders.find(0xF4EF16E9u);
+          if (it != custom_shaders.end()) {
+            it->second.on_inject = OnLatencyBarInject;
+          }
+        }
         {
           auto it = custom_shaders.find(0xF1B0E28Au);
           if (it != custom_shaders.end()) {
