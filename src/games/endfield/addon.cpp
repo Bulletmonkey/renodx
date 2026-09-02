@@ -529,10 +529,10 @@ struct VfxBoostMatch {
 };
 
 constexpr std::array vfx_boost_matches = {
-    VfxBoostMatch{0xD1547742u, 0x512923BCu, 2u},
-    VfxBoostMatch{0xAE252182u, 0xF38B0BAAu, 2u},
-    VfxBoostMatch{0xAC95E7B1u, 0xFA6BD53Au, 4u},
-    VfxBoostMatch{0x333B85CCu, 0x1A45F4EBu, 8u},
+    VfxBoostMatch{0x881DB082u, 0x512923BCu, 2u},
+    VfxBoostMatch{0xAB12CDAEu, 0xF38B0BAAu, 2u},
+    VfxBoostMatch{0x5C327134u, 0xFA6BD53Au, 4u},
+    VfxBoostMatch{0x56EFE5ADu, 0x1A45F4EBu, 8u},
 };
 
 std::shared_mutex vfx_texture_mutex;
@@ -1035,10 +1035,10 @@ void OnDestroyVfxDevice(reshade::api::device* device) {
   vulkan_graphics_push_images_set_1.clear();
 }
 
-constexpr std::array<uint32_t, 12> kVulkanUiVisibilityPixelShaderHashes = {
-    0x71C9A27Au,
-    0x2002AE80u,
-    0xCEC6342Au,
+// Patch 1.5 adds four general UI permutations with the revised descriptor
+// layout. The separate 0x39F4860C permutation is handled by the shared
+// UID/ping path below so the latency-bar controls remain independent.
+constexpr std::array<uint32_t, 13> kVulkanUiVisibilityPixelShaderHashes = {
     0xF952B899u,
     0x0CF25D6Fu,
     0x8D8CA241u,
@@ -1048,15 +1048,35 @@ constexpr std::array<uint32_t, 12> kVulkanUiVisibilityPixelShaderHashes = {
     0x934733E7u,
     0x3961B617u,
     0x89B77E6Du,
+    0x0BADCCF7u,
+    0x6F894992u,
+    0xB1DDA12Au,
+    0x0606C75Du,
 };
 constexpr uint32_t kVulkanUidPixelShaderHash = 0xFF43F702u;
+constexpr uint32_t kVulkanSharedUidPingPixelShaderHash = 0x39F4860Cu;
 constexpr std::array<uint32_t, 2> kVulkanDirectHidePixelShaderHashes = {
     0xAB895B1Fu,
     0xACF0F46Du,
 };
 
-constexpr uint32_t kVulkanPingVertexShaderHash = 0xDB010722u;
-constexpr uint32_t kVulkanPingPixelShaderHash = 0x512AB6E6u;
+struct VulkanPingShaderPair {
+  uint32_t vertex_shader_hash;
+  uint32_t pixel_shader_hash;
+};
+
+constexpr VulkanPingShaderPair kVulkanLatencyBarShaderPair = {
+    0xDB010722u,
+    0x512AB6E6u,
+};
+constexpr VulkanPingShaderPair kVulkanSharedUidPingShaderPair = {
+    0xCC30F7F3u,
+    kVulkanSharedUidPingPixelShaderHash,
+};
+constexpr std::array kVulkanPingShaderPairs = {
+    kVulkanLatencyBarShaderPair,
+    kVulkanSharedUidPingShaderPair,
+};
 
 bool IsVisible(float value) {
   return value >= 0.5f;
@@ -1162,6 +1182,20 @@ bool OnUiVisibilityDraw(reshade::api::command_list* cmd_list) {
 
 bool OnUidOrUiVisibilityDraw(reshade::api::command_list* cmd_list) {
   if (shader_injection.ui_visibility < 0.5f) return false;
+  return OnUIDDraw(cmd_list);
+}
+
+bool OnSharedUidPingDraw(reshade::api::command_list* cmd_list) {
+  bool is_ping_input_candidate = false;
+  {
+    const std::lock_guard lock(ui_draw_detection_mutex);
+    const auto state = ui_draw_detection_states.find(GetCommandListKey(cmd_list));
+    is_ping_input_candidate = state != ui_draw_detection_states.end()
+        && state->second.is_ping_input_candidate;
+  }
+  OnPingDraw(cmd_list);
+  if (shader_injection.ui_visibility < 0.5f) return false;
+  if (is_ping_input_candidate) return true;
   return OnUIDDraw(cmd_list);
 }
 
@@ -2051,7 +2085,7 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
-        .label = "- Maintained by Rat for Arknights: Endfield 1.4.4",
+        .label = "- Maintained by Rat for Arknights: Endfield 1.5",
         .section = "About",
     },
     new renodx::utils::settings::Setting{
@@ -2168,18 +2202,26 @@ bool OnDrawIndexed(
 
   const bool is_latency_bar_draw_candidate =
       ping_geometry_candidate
-      && vertex_shader_hash == kVulkanPingVertexShaderHash
-      && pixel_shader_hash == kVulkanPingPixelShaderHash;
-  if (is_latency_bar_draw_candidate) {
+      && vertex_shader_hash == kVulkanLatencyBarShaderPair.vertex_shader_hash
+      && pixel_shader_hash == kVulkanLatencyBarShaderPair.pixel_shader_hash;
+  const bool is_shared_uid_ping_draw_candidate =
+      ping_geometry_candidate
+      && vertex_shader_hash == kVulkanSharedUidPingShaderPair.vertex_shader_hash
+      && pixel_shader_hash == kVulkanSharedUidPingShaderPair.pixel_shader_hash;
+  if (is_latency_bar_draw_candidate || is_shared_uid_ping_draw_candidate) {
     {
       const std::lock_guard lock(ui_draw_detection_mutex);
       auto& state = ui_draw_detection_states[command_list_key];
-      state.is_latency_bar_draw_candidate = true;
+      state.is_latency_bar_draw_candidate = is_latency_bar_draw_candidate;
       state.is_ping_input_candidate = state.draw_call_vertex_count == 0;
       if (state.is_ping_input_candidate) {
         state.is_ping_drawn = true;
       }
       state.draw_call_vertex_count = 0;
+    }
+    if (is_latency_bar_draw_candidate
+        && !IsVisible(shader_injection.ping_text_opacity)) {
+      return true;
     }
     return false;
   }
@@ -2189,7 +2231,9 @@ bool OnDrawIndexed(
     const std::lock_guard lock(ui_draw_detection_mutex);
     auto& state = ui_draw_detection_states[command_list_key];
     state.is_uid_input_candidate = uid_geometry_candidate
-        && (state.is_ping_drawn || pixel_shader_hash == kVulkanUidPixelShaderHash);
+        && (state.is_ping_drawn
+            || pixel_shader_hash == kVulkanUidPixelShaderHash
+            || pixel_shader_hash == kVulkanSharedUidPingPixelShaderHash);
     state.draw_call_vertex_count = 0;
     is_uid_input_candidate = state.is_uid_input_candidate;
   }
@@ -2461,10 +2505,13 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
             .old_format = reshade::api::format::r8g8b8a8_unorm,
             .new_format = reshade::api::format::r16g16b16a16_float,
-            .ignore_size = true,
+            // Patch 1.5 uses RGBA8 render targets for internal render-resolution
+            // data. Do not upgrade those alongside the final linear intermediate;
+            // keep the HDR upgrade limited to swapchain-sized resources.
+            .ignore_size = false,
             .view_upgrades = renodx::utils::resource::VIEW_UPGRADES_RGBA16F,
             .usage_include = reshade::api::resource_usage::render_target,
-            .name = "Endfield all-size linear intermediate Vulkan upgrade",
+            .name = "Endfield swapchain-size linear intermediate Vulkan upgrade",
         });
 
         constexpr std::array<uint32_t, 8> reshade_before_ui_crcs = {
@@ -2539,26 +2586,29 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         }
         RegisterUidBypassShader(kVulkanUidPixelShaderHash);
 
-        {
-          auto it = custom_shaders.find(kVulkanPingVertexShaderHash);
-          if (it != custom_shaders.end()) {
-            it->second.on_inject = InjectLatencyBarDrawOpacity;
+        for (const auto& pair : kVulkanPingShaderPairs) {
+          auto vertex_it = custom_shaders.find(pair.vertex_shader_hash);
+          if (vertex_it != custom_shaders.end()
+              && pair.pixel_shader_hash != kVulkanSharedUidPingPixelShaderHash) {
+            vertex_it->second.on_inject = InjectLatencyBarDrawOpacity;
           }
-        }
 
-        {
-          auto it = custom_shaders.find(kVulkanPingPixelShaderHash);
-          if (it == custom_shaders.end()) {
+          auto pixel_it = custom_shaders.find(pair.pixel_shader_hash);
+          const auto on_draw =
+              pair.pixel_shader_hash == kVulkanSharedUidPingPixelShaderHash
+              ? OnSharedUidPingDraw
+              : OnPingDraw;
+          if (pixel_it == custom_shaders.end()) {
             renodx::mods::shader::CustomShader cs{};
-            cs.crc32 = kVulkanPingPixelShaderHash;
-            cs.on_draw = OnPingDraw;
-            custom_shaders.emplace(kVulkanPingPixelShaderHash, std::move(cs));
+            cs.crc32 = pair.pixel_shader_hash;
+            cs.on_draw = on_draw;
+            custom_shaders.emplace(pair.pixel_shader_hash, std::move(cs));
           } else {
-            it->second.on_draw = OnPingDraw;
+            pixel_it->second.on_draw = on_draw;
           }
-          reshade::register_event<reshade::addon_event::draw>(OnDraw);
-          reshade::register_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
         }
+        reshade::register_event<reshade::addon_event::draw>(OnDraw);
+        reshade::register_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
 
         initialized = true;
       }

@@ -692,6 +692,12 @@ void frag_main()
         _1511 = _1295;
     }
     float3 _1517 = (_1511 * _9_m23.z) * _9_m22.y;
+    // RenoDX code start: link cubemap ambient intensity to the scene lighting response.
+    if (RENODX_CUBEMAP_AMBIENT != 0.0f)
+    {
+        _1517 *= 0.25f + (0.75f * saturate(_1293));
+    }
+    // RenoDX code end
     float3 _1540;
     [branch]
     if (_9_m23.y != 0.0f)
