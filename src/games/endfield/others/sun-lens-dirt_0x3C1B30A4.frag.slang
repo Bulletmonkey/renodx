@@ -1,3 +1,4 @@
+#include "../shared.h"
 [[vk::binding(4, 3)]] Texture2D<float4> t0 : register(t0);
 [[vk::binding(3, 3)]] SamplerState s0_s : register(s0);
 
@@ -17,4 +18,6 @@ void main(
     float opacity : TEXCOORD1,
     out float4 output : SV_Target0) {
   output = opacity * cb1[6] * t0.SampleBias(s0_s, uv, cb0[26].x) * 0.25f;
+  // RenoDX debug branch: shader category coloring.
+  output = ApplyShaderDebugColor(output);
 }

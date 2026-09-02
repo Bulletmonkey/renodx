@@ -1,3 +1,5 @@
+// RenoDX debug branch: shader category coloring.
+#include "../shared.h"
 
 [[vk::binding(2, 0)]] Texture2D<float4> t1 : register(t1);
 
@@ -82,6 +84,6 @@ void main(uint3 vThreadID : SV_DispatchThreadID)
   r1.x = r1.y ? r1.x : 0;
   r1.x = r1.x ? 1.000000 : 0;             // 1 if within bounds
   r0.xyzw = r1.xxxx * r0.xyzw;            // Zero out-of-bounds pixels
-  u0[vThreadID.xy] = r0.xyz;
+  u0[vThreadID.xy] = ApplyShaderDebugColor(r0.xyz);
   return;
 }

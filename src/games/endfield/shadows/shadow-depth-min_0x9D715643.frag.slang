@@ -23,5 +23,7 @@ void main(
   r0.xyzw = t0.Gather(s0_s, v1.xy).xyzw;
   r0.xy = min(r0.xz, r0.yw);
   oDepth = min(r0.x, r0.y);
+  // RenoDX debug branch: depth-only pass uses debug-color luminance.
+  oDepth = ApplyShaderDebugColor(oDepth);
   return;
 }

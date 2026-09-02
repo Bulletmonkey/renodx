@@ -8,11 +8,14 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <cwchar>
 #include <deque>
 #include <mutex>
 #include <shared_mutex>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -243,6 +246,302 @@ void InitializeCustomShaders() {
 }
 
 ShaderInjectData shader_injection;
+static_assert(sizeof(ShaderInjectData) == 61u * sizeof(float));
+
+struct DebugShaderEntry {
+  uint32_t crc32;
+  float enabled = 1.f;
+  const char* note = nullptr;
+};
+
+struct DebugShaderCategory {
+  const char* key;
+  const char* label;
+  float enabled = 0.f;
+  std::vector<DebugShaderEntry> shaders;
+};
+
+std::vector<DebugShaderCategory> debug_shader_categories = {
+    {"ao", "Ambient Occlusion", 0.f, {
+        {0x55164654u},
+        {0x85BD40EFu},
+        {0x902C57D5u},
+        {0xA7971E21u},
+        {0xAC758574u},
+    }},
+    {"bloom", "Bloom", 0.f, {
+        {0x76CAB70Au},
+        {0xA8D63455u},
+        {0xD90323E9u},
+        {0xF660BBADu},
+    }},
+    {"cubemap-ambient", "Cubemap Ambient", 0.f, {
+        {0x01345507u},
+        {0x0AFEFC8Fu},
+        {0x1D89E872u},
+        {0x20BB91FDu},
+        {0x3B7B7ED4u},
+        {0x629026ECu},
+        {0x83E58EA6u},
+        {0x92B001E2u},
+        {0x95EAF63Fu},
+        {0xA7660314u},
+        {0xC3AB0F5Cu},
+        {0xCAE899A1u},
+        {0xD2311474u},
+        {0xD818A5DBu},
+        {0xDE2FA869u},
+        {0xE36852CAu},
+        {0xFA8530EFu},
+    }},
+    {"custom-fog", "Custom Fog", 0.f, {
+        {0x01345507u},
+        {0x04EF314Du},
+        {0x06CA1331u},
+        {0x0AFEFC8Fu},
+        {0x14BCD53Du},
+        {0x1CD715AFu},
+        {0x1D89E872u},
+        {0x20BB91FDu},
+        {0x2C4C1F9Cu},
+        {0x2DF0BFFAu},
+        {0x2F7515B0u},
+        {0x331AC6F3u},
+        {0x370F0276u},
+        {0x38004378u},
+        {0x3B7B7ED4u},
+        {0x3C932A20u},
+        {0x40CC52C4u},
+        {0x4607DEFCu},
+        {0x4702C983u},
+        {0x495BE4B7u},
+        {0x508FE28Fu},
+        {0x54D1C7D3u},
+        {0x57038FBCu},
+        {0x629026ECu},
+        {0x723AA6A9u, 1.f, "Character tail glow; fog classification unverified"},
+        {0x80312AA0u},
+        {0x824C3260u},
+        {0x8349AD92u},
+        {0x83E58EA6u},
+        {0x89025BADu},
+        {0x8CA65275u},
+        {0x8CA6ECE1u},
+        {0x8F3D2D48u},
+        {0x92B001E2u},
+        {0x93F0C75Cu},
+        {0x9435BB16u},
+        {0x95EAF63Fu},
+        {0x97F58A8Du},
+        {0x9BAF6ABCu},
+        {0xA7660314u},
+        {0xB310ACACu},
+        {0xBAF57E04u},
+        {0xC3AB0F5Cu},
+        {0xCAE899A1u},
+        {0xD18C40F7u},
+        {0xD2311474u},
+        {0xD6247969u},
+        {0xD818A5DBu},
+        {0xDE2FA869u},
+        {0xE0F57D50u},
+        {0xE36852CAu},
+        {0xECD5EC5Au},
+        {0xFA8530EFu},
+    }},
+    {"improved-gtao", "Improved GTAO", 0.f, {
+        {0x01345507u},
+        {0x06CA1331u},
+        {0x0AFEFC8Fu},
+        {0x1CD715AFu},
+        {0x1D89E872u},
+        {0x20BB91FDu},
+        {0x2C4C1F9Cu},
+        {0x2DF0BFFAu},
+        {0x370F0276u},
+        {0x3B7B7ED4u},
+        {0x3C932A20u},
+        {0x40CC52C4u},
+        {0x57038FBCu},
+        {0x629026ECu},
+        {0x8349AD92u},
+        {0x83E58EA6u},
+        {0x8CA65275u},
+        {0x92B001E2u},
+        {0x93F0C75Cu},
+        {0x9435BB16u},
+        {0x95EAF63Fu},
+        {0x97F58A8Du},
+        {0xA7660314u},
+        {0xBAF57E04u},
+        {0xC3AB0F5Cu},
+        {0xCAE899A1u},
+        {0xD2311474u},
+        {0xD818A5DBu},
+        {0xDE2FA869u},
+        {0xE36852CAu},
+        {0xECD5EC5Au},
+        {0xFA8530EFu},
+    }},
+    {"glass", "Glass", 0.f, {
+        {0x00663F45u},
+        {0x05D2E036u},
+        {0x1693BA0Eu},
+        {0x198278F0u},
+        {0x2AD43A47u},
+        {0x2B2AADD6u},
+        {0x4DBDE72Cu},
+        {0x7A188763u},
+        {0x85A4ABC2u},
+        {0x87DCA0D5u},
+        {0x8B7AEBD9u},
+        {0x9A86EA7Eu},
+        {0xA5F85E56u},
+        {0xB8A8CA8Du},
+        {0xBA54B1A7u},
+        {0xCBA57214u},
+        {0xDE3D8CA7u},
+        {0xE99626A5u},
+        {0xEB74AB20u},
+        {0xF455600Eu},
+    }},
+    {"blit", "Blit / Sharpening", 0.f, {
+        {0xEF55D954u},
+    }},
+    {"godrays", "God Rays", 0.f, {
+        {0x71F60A6Au},
+        {0x8D28663Fu},
+    }},
+    {"lutbuilder", "LUT Builder", 0.f, {
+        {0x631FD220u},
+    }},
+    {"sky-sun", "Sky and Sun", 0.f, {
+        {0x145B4CC6u},
+        {0x3C1B30A4u},
+        {0x5CC378D2u},
+        {0x9C6EF4B8u},
+        {0xB2CF31B2u},
+        {0xC003CAACu},
+    }},
+    {"video", "HDR Video", 0.f, {
+        {0x318C54FDu},
+        {0x4CB44B80u},
+        {0xE18EC64Fu},
+        {0xE5CB2D61u},
+    }},
+    {"shadows", "Shadows", 0.f, {
+        {0x136C0899u},
+        {0x3ACBD91Bu},
+        {0x973FCE7Bu},
+        {0x9D715643u},
+        {0xD1EAE8DEu},
+        {0xE54D058Fu},
+        {0xEB95861Eu},
+    }},
+    {"ssr", "SSR", 0.f, {
+        {0x19D33C14u},
+        {0x3FD93A7Eu},
+        {0x4187AEA7u},
+        {0x4AB7B80Eu},
+        {0x5BBA036Cu},
+        {0x72313C00u},
+        {0x9611100Fu},
+        {0xA54EA53Cu},
+        {0xAA02F92Au},
+    }},
+    {"uberpost", "Tone Mapping", 0.f, {
+        {0x0487B658u},
+        {0x10BC9694u},
+        {0x13C57353u},
+        {0x19410DCFu},
+        {0x260CB7DEu},
+        {0x2B3968F0u},
+        {0x36E19AC8u},
+        {0x4B3E474Eu},
+        {0x56850F7Au},
+        {0x62334C44u},
+        {0x6D424A74u},
+        {0x719652B4u},
+        {0x7D7AFCEBu},
+        {0x8B13BC9Bu},
+        {0x8B4A9C41u},
+        {0x8E6BF5FCu},
+        {0x8E8A5512u},
+        {0x9381A817u},
+        {0x948C5FB7u},
+        {0x96DD18A0u},
+        {0xB1925280u},
+        {0xB36DA950u},
+        {0xB6010B6Bu},
+        {0xD2389A17u},
+        {0xD963D715u},
+        {0xE87BBC9Eu},
+        {0xE928C915u},
+        {0xEDE92E55u},
+        {0xEF7FFAF0u},
+        {0xF02F2F18u},
+        {0xFE6983A2u},
+        {0xFF9919ADu},
+    }},
+    {"ui", "UI", 0.f, {
+        {0x0BADCCF7u},
+        {0x0CF25D6Fu},
+        {0x3961B617u},
+        {0x39F4860Cu},
+        {0x4A58BC0Bu},
+        {0x512AB6E6u},
+        {0x6F894992u},
+        {0x7D650384u},
+        {0x89B77E6Du},
+        {0x8D8CA241u},
+        {0x934733E7u},
+        {0xAB895B1Fu},
+        {0xACF0F46Du},
+        {0xAEC2747Bu},
+        {0xB1DDA12Au},
+        {0xF952B899u},
+        {0xFF43F702u},
+    }},
+    {"vfx", "VFX", 0.f, {
+        {0x56EFE5ADu},
+        {0x5C327134u},
+        {0x881DB082u},
+        {0xAB12CDAEu},
+    }},
+    {"waterfalls", "Waterfalls", 0.f, {
+        {0xC609222Au},
+    }},
+};
+
+uint32_t GetDebugShaderColor(size_t index) {
+  const float hue = std::fmod(static_cast<float>(index) * 0.61803398875f, 1.f);
+  const float scaled_hue = hue * 6.f;
+  const int sector = static_cast<int>(scaled_hue);
+  const float fraction = scaled_hue - static_cast<float>(sector);
+  const float p = 0.25f;
+  const float q = 1.f - (0.75f * fraction);
+  const float t = 0.25f + (0.75f * fraction);
+  float red = 1.f;
+  float green = t;
+  float blue = p;
+  switch (sector % 6) {
+    case 1: red = q; green = 1.f; blue = p; break;
+    case 2: red = p; green = 1.f; blue = t; break;
+    case 3: red = p; green = q; blue = 1.f; break;
+    case 4: red = t; green = p; blue = 1.f; break;
+    case 5: red = 1.f; green = p; blue = q; break;
+  }
+  const auto to_byte = [](float value) {
+    return static_cast<uint32_t>(std::round(value * 255.f));
+  };
+  return (to_byte(red) << 16u) | (to_byte(green) << 8u) | to_byte(blue);
+}
+
+std::string FormatShaderHash(uint32_t crc32) {
+  char text[11] = {};
+  std::snprintf(text, std::size(text), "0x%08X", crc32);
+  return text;
+}
 
 // Keep the fullscreen output pass on a compact push-constant payload while
 // game shader injection uses RenoDX's official Vulkan push-constant path.
@@ -2105,6 +2404,81 @@ renodx::utils::settings::Settings settings = {
     },
 };
 
+void InitializeShaderDebugControls() {
+  struct ShaderMembership {
+    DebugShaderCategory* category;
+    DebugShaderEntry* entry;
+    uint32_t color;
+  };
+  std::unordered_map<uint32_t, std::vector<ShaderMembership>> memberships;
+
+  for (auto& category : debug_shader_categories) {
+    auto* category_ptr = &category;
+    const std::string category_key = std::string("DebugShader.") + category.key;
+    const std::string category_section = std::string("Debug - ") + category.label;
+    settings.push_back(new renodx::utils::settings::Setting{
+        .key = category_key,
+        .binding = &category.enabled,
+        .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+        .default_value = 0.f,
+        .label = "Color category",
+        .section = category_section,
+        .tooltip = "Colors every enabled replacement shader used by this improvement. Expand this section to toggle individual hashes.",
+        .tint = GetDebugShaderColor(0u),
+    });
+
+    for (size_t index = 0u; index < category.shaders.size(); ++index) {
+      auto& entry = category.shaders[index];
+      auto* entry_ptr = &entry;
+      const uint32_t color = GetDebugShaderColor(index);
+      const std::string shader_hash = FormatShaderHash(entry.crc32);
+      const std::string shader_label = entry.note == nullptr
+          ? shader_hash
+          : shader_hash + " - " + entry.note;
+      settings.push_back(new renodx::utils::settings::Setting{
+          .key = category_key + "." + shader_hash,
+          .binding = &entry.enabled,
+          .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+          .default_value = 1.f,
+          .label = shader_label,
+          .section = category_section,
+          .tooltip = "Colors this replacement shader while the category switch is enabled.",
+          .tint = color,
+          .is_enabled = [category_ptr]() { return category_ptr->enabled >= 0.5f; },
+      });
+      memberships[entry.crc32].push_back({category_ptr, entry_ptr, color});
+    }
+  }
+
+  for (const auto& [crc32, shader_memberships] : memberships) {
+    auto shader = custom_shaders.find(crc32);
+    if (shader == custom_shaders.end()) {
+      reshade::log::message(
+          reshade::log::level::warning,
+          ("Debug shader hash has no replacement: " + FormatShaderHash(crc32)).c_str());
+      continue;
+    }
+
+    const auto previous_inject = shader->second.on_inject;
+    shader->second.on_inject =
+        [previous_inject, shader_memberships](
+            reshade::api::command_list* cmd_list) {
+          if (previous_inject != nullptr && !previous_inject(cmd_list)) {
+            return false;
+          }
+          shader_injection.debug_shader_color = 0.f;
+          for (const auto& membership : shader_memberships) {
+            if (membership.category->enabled >= 0.5f
+                && membership.entry->enabled >= 0.5f) {
+              shader_injection.debug_shader_color =
+                  static_cast<float>(membership.color);
+              break;
+            }
+          }
+          return true;
+        };
+  }
+}
 void OnPresetOff() {
      renodx::utils::settings::UpdateSetting("ToneMapType", 0.f);
      renodx::utils::settings::UpdateSetting("ToneMapPeakNits", 203.f);
@@ -2609,6 +2983,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         }
         reshade::register_event<reshade::addon_event::draw>(OnDraw);
         reshade::register_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
+
+        InitializeShaderDebugControls();
 
         initialized = true;
       }

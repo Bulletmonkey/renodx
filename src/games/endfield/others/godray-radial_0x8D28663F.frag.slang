@@ -25,4 +25,6 @@ void main(
   // RenoDX code end
 
   output = opacity * color;
+  // RenoDX debug branch: shader category coloring.
+  output = ApplyShaderDebugColor(output);
 }

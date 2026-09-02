@@ -1,3 +1,4 @@
+// RenoDX debug branch: shader category coloring.
 
 #include "../shared.h"
 
@@ -445,6 +446,6 @@ void main(uint3 vThreadIDInGroup : SV_GroupThreadID, uint3 vThreadGroupID : SV_G
   r0.x = floor(r0.x);
   r6.y = 0.00392156886 * r0.x;
 
-  u0[r4.xy] = r6.xy;
+  u0[r4.xy] = ApplyShaderDebugColor(r6.xy);
   return;
 }

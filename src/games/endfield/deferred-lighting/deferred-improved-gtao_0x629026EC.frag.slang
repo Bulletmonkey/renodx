@@ -1,3 +1,4 @@
+#include "../shared.h"
 // DX11 0x09E3521F -> Vulkan 0x629026EC
 struct _25
 {
@@ -806,5 +807,7 @@ SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
     frag_main();
     SPIRV_Cross_Output stage_output;
     stage_output._5 = _5;
+    // RenoDX debug branch: shader category coloring.
+    stage_output._5 = ApplyShaderDebugColor(stage_output._5);
     return stage_output;
 }

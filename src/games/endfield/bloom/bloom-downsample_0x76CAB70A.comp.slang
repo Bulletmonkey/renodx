@@ -1,3 +1,4 @@
+// RenoDX debug branch: shader category coloring.
 #include "../shared.h"
 
 // Vulkan shader 0x76CAB70A, decompiled from the matching game shader dump.
@@ -103,7 +104,7 @@ void comp_main()
     uint _412 = _340 + 64u;
     float3 _433 = ((((asfloat(uint3(_14[_376], _15[_376], _16[_376])) * 0.2734375f) + ((asfloat(uint3(_14[_367], _15[_367], _16[_367])) + asfloat(uint3(_14[_385], _15[_385], _16[_385]))) * 0.21875f)) + ((asfloat(uint3(_14[_358], _15[_358], _16[_358])) + asfloat(uint3(_14[_394], _15[_394], _16[_394]))) * 0.109375f)) + ((asfloat(uint3(_14[_349], _15[_349], _16[_349])) + asfloat(uint3(_14[_403], _15[_403], _16[_403]))) * 0.03125f)) + ((asfloat(uint3(_14[_340], _15[_340], _16[_340])) + asfloat(uint3(_14[_412], _15[_412], _16[_412]))) * 0.00390625f);
     uint2 _435 = uint2(_13_m0.xy);
-    _11[gl_GlobalInvocationID.xy] = _433 * float(all(bool2(gl_GlobalInvocationID.xy.x < _435.x, gl_GlobalInvocationID.xy.y < _435.y)));
+    _11[gl_GlobalInvocationID.xy] = ApplyShaderDebugColor(_433 * float(all(bool2(gl_GlobalInvocationID.xy.x < _435.x, gl_GlobalInvocationID.xy.y < _435.y))));
 }
 
 [numthreads(8, 8, 1)]

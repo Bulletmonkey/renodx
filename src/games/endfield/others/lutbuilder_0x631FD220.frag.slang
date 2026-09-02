@@ -1,3 +1,4 @@
+#include "../shared.h"
 // ---- Created with 3Dmigoto v1.3.16 on Thu Jan 22 21:41:37 2026
 
 [[vk::binding(4, 3)]] Texture2D<float4> t7 : register(t7);
@@ -302,5 +303,7 @@ void main(
   r0.yzw = r0.yzw + -r1.xyz;
   o0.xyz = (r0.xxx * r0.yzw + r1.xyz);
   o0.w = 1;
+  // RenoDX debug branch: shader category coloring.
+  o0 = ApplyShaderDebugColor(o0);
   return;
 }

@@ -62,6 +62,7 @@ struct ShaderInjectData {
   float ui_aspect_ratio;
   float improved_gtao;
   float fake_cloud_shadows;
+  float debug_shader_color;
 };
 
 #ifndef __cplusplus
@@ -153,6 +154,39 @@ cbuffer shader_injection : register(b13) {
 #define AO_BITMASK                             1.0
 #define IMPROVED_GTAO                          shader_injection.improved_gtao
 #define FAKE_CLOUD_SHADOWS                     shader_injection.fake_cloud_shadows
+
+bool IsShaderDebugColorEnabled() {
+  return shader_injection.debug_shader_color >= 1.f;
+}
+
+float3 GetShaderDebugColor() {
+  uint packed_color = uint(shader_injection.debug_shader_color);
+  return float3(
+      (packed_color >> 16u) & 0xFFu,
+      (packed_color >> 8u) & 0xFFu,
+      packed_color & 0xFFu)
+      / 255.f;
+}
+
+float4 ApplyShaderDebugColor(float4 color) {
+  return IsShaderDebugColorEnabled()
+      ? float4(GetShaderDebugColor(), 1.f)
+      : color;
+}
+
+float3 ApplyShaderDebugColor(float3 color) {
+  return IsShaderDebugColorEnabled() ? GetShaderDebugColor() : color;
+}
+
+float2 ApplyShaderDebugColor(float2 color) {
+  return IsShaderDebugColorEnabled() ? GetShaderDebugColor().rg : color;
+}
+
+float ApplyShaderDebugColor(float color) {
+  return IsShaderDebugColorEnabled()
+      ? dot(GetShaderDebugColor(), float3(0.2126f, 0.7152f, 0.0722f))
+      : color;
+}
 
 float3 ApplyVFXBoost(float3 color) {
   if (RENODX_TONE_MAP_TYPE != 0.f

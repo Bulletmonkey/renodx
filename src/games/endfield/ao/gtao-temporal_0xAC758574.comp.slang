@@ -1,3 +1,4 @@
+// RenoDX debug branch: shader category coloring.
 // ---- Created with 3Dmigoto v1.4.1 on Tue Feb 10 15:11:49 2026
 [[vk::binding(4, 0)]] Texture2D<float4> t3 : register(t3);
 
@@ -120,6 +121,6 @@ void main(uint3 vThreadID : SV_DispatchThreadID)
   }
   // RenoDX code end
   r3.w = 0;
-  u0[vThreadID.xy] = r3.xyzw;
+  u0[vThreadID.xy] = ApplyShaderDebugColor(r3.xyzw);
   return;
 }

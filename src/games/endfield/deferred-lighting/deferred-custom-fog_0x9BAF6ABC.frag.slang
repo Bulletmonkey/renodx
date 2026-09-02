@@ -1,3 +1,4 @@
+#include "../shared.h"
 // Endfield 1.5 Vulkan shader 0x9BAF6ABC, migrated from 1.4.4 shader 0xE1F7D5C5.
 #include "./renodx_injection.hlsli"
 
@@ -1274,5 +1275,7 @@ SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
     SPIRV_Cross_Output stage_output;
     stage_output._14 = _14;
     stage_output._15 = _15;
+    // RenoDX debug branch: shader category coloring.
+    stage_output._14 = ApplyShaderDebugColor(stage_output._14);
     return stage_output;
 }

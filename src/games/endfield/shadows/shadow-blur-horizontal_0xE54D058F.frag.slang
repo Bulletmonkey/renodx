@@ -70,5 +70,7 @@ void main(
   r0.y = t0.Load(r1.xyz).x;
   o0.xyz = r0.yyy * float3(0.142857149,0.142857149,0.142857149) + r0.xxx;
   o0.w = 1;
+  // RenoDX debug branch: shader category coloring.
+  o0 = ApplyShaderDebugColor(o0);
   return;
 }

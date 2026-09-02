@@ -159,5 +159,7 @@ void main(
   } else {
     o0.xyzw = float4(0,0,0,0);
   }
+  // RenoDX debug branch: shader category coloring.
+  o0 = ApplyShaderDebugColor(o0);
   return;
 }

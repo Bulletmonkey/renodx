@@ -20,4 +20,6 @@ void main(
   // RenoDX code end
 
   output = float4(color, 1.f);
+  // RenoDX debug branch: shader category coloring.
+  output = ApplyShaderDebugColor(output);
 }

@@ -1,3 +1,4 @@
+#include "../shared.h"
 #include "../common.hlsl"
 
 struct _13
@@ -78,5 +79,7 @@ SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
     _7.xyz = AutoHDRVideo(_7.xyz);
     SPIRV_Cross_Output stage_output;
     stage_output._7 = _7;
+    // RenoDX debug branch: shader category coloring.
+    stage_output._7 = ApplyShaderDebugColor(stage_output._7);
     return stage_output;
 }

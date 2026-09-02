@@ -1,4 +1,6 @@
+#include "../shared.h"
 // Endfield 1.5 Vulkan shader 0x723AA6A9, migrated from 1.4.4 shader 0x56AEE0AF.
+// Known to affect character tail glow; its fog-family classification remains unverified.
 // Classification is provisional: runtime observation does not currently look
 // like fog. Keep the replacement enabled pending a new DevKit pass trace.
 #include "./renodx_injection.hlsli"
@@ -1506,5 +1508,7 @@ SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
     SPIRV_Cross_Output stage_output;
     stage_output._14 = _14;
     stage_output._15 = _15;
+    // RenoDX debug branch: shader category coloring.
+    stage_output._14 = ApplyShaderDebugColor(stage_output._14);
     return stage_output;
 }

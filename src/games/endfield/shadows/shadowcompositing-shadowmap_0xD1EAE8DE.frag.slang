@@ -405,5 +405,7 @@ void main(
   r0.x = -1 + r0.x;
   o0.x = cb3[34].x * r0.x + 1;
   o0.yz = float2(1,0);
+  // RenoDX debug branch: shader category coloring.
+  o0 = ApplyShaderDebugColor(o0);
   return;
 }

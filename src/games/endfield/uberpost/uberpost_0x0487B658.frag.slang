@@ -1,3 +1,4 @@
+#include "../shared.h"
 // ---- Created with 3Dmigoto v1.3.16 on Tue Jan 20 19:03:59 2026
 #include "../common.hlsl"
 
@@ -230,5 +231,7 @@ void main(
   o0.xyz = renodx::draw::RenderIntermediatePass(o0.xyz);
   // RenoDX code end
   o0.w = min(1, r1.w);
+  // RenoDX debug branch: shader category coloring.
+  o0 = ApplyShaderDebugColor(o0);
   return;
 }

@@ -1410,5 +1410,7 @@ SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
     SPIRV_Cross_Output stage_output;
     stage_output._13 = _13;
     stage_output._14 = _14;
+    // RenoDX debug branch: shader category coloring.
+    stage_output._13 = ApplyShaderDebugColor(stage_output._13);
     return stage_output;
 }

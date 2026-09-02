@@ -1,3 +1,4 @@
+// RenoDX debug branch: shader category coloring.
 #include "../shared.h"
 
 [[vk::binding(0, 1)]]
@@ -142,7 +143,7 @@ void comp_main()
             _298 = 0.0f.xx;
         }
         float4 _305 = _14.SampleLevel(_9, (float2(_104) + 0.5f.xx) * _13_m0.zw, 0.0f);
-        _19[_104] = _305.xyz * (1.0f / (max(max(_305.x, _305.y), _305.z) + 1.0f));
+        _19[_104] = ApplyShaderDebugColor(_305.xyz * (1.0f / (max(max(_305.x, _305.y), _305.z) + 1.0f)));
         _21[_104] = _298;
         _23[_104] = 0.0f;
         break;

@@ -1,3 +1,4 @@
+// RenoDX debug branch: shader category coloring.
 #include "../shared.h"
 
 // Endfield 1.5 Vulkan shader 0xA8D63455, migrated from 1.4.4 shader 0x3DAE293E.
@@ -196,7 +197,7 @@ void comp_main()
         continue;
     }
     uint2 _164 = uint2(_13_m0.xy);
-    _11[uint2(_92)] = (_103 / _100.xxx) * float(all(bool2(gl_GlobalInvocationID.xy.x <= _164.x, gl_GlobalInvocationID.xy.y <= _164.y)));
+    _11[uint2(_92)] = ApplyShaderDebugColor((_103 / _100.xxx) * float(all(bool2(gl_GlobalInvocationID.xy.x <= _164.x, gl_GlobalInvocationID.xy.y <= _164.y))));
 }
 
 [numthreads(8, 8, 1)]

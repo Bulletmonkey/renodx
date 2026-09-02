@@ -1,3 +1,4 @@
+// RenoDX debug branch: shader category coloring.
 #include "../shared.h"
 
 // Vulkan shader 0x55164654, decompiled from the matching game shader dump.
@@ -97,10 +98,10 @@ void comp_main()
         _66[_163] *= 1.5f;
         /*
         Vanilla shader code from 0x55164654:
-        _12[uint2(int2(int(_85 + uint(_163)), int(_87)))] = _66[_163];
+        _12[uint2(int2(int(_85 + uint(_163)), int(_87)))] = ApplyShaderDebugColor(_66[_163]);
         */
         // RenoDX code: Replace the game's visibility-bitmask AO with neutral visibility when game AO is disabled.
-        _12[uint2(int2(int(_85 + uint(_163)), int(_87)))] = shader_injection.disable_game_ao >= 0.5f ? 1.0f : _66[_163];
+        _12[uint2(int2(int(_85 + uint(_163)), int(_87)))] = ApplyShaderDebugColor(shader_injection.disable_game_ao >= 0.5f ? 1.0f : _66[_163]);
         _163++;
         continue;
     }

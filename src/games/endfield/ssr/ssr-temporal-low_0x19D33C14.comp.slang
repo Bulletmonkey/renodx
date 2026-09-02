@@ -1,3 +1,4 @@
+// RenoDX debug branch: shader category coloring.
 #include "../shared.h"
 
 // Endfield 1.5 Vulkan shader 0x19D33C14, migrated from 1.4.4 shader 0x34A94A81.
@@ -451,7 +452,7 @@ void comp_main()
             _659 = _504;
             break;
         } while(false);
-        _21[_134] = _659;
+        _21[_134] = ApplyShaderDebugColor(_659);
         _22[_134] = _657;
         _24[_134] = _658;
         break;

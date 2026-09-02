@@ -1,3 +1,4 @@
+#include "../shared.h"
 #include "../common.hlsl"
 
 [[vk::binding(4, 3)]]
@@ -60,5 +61,7 @@ SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
     _5.xyz = AutoHDRVideo(_5.xyz);
     SPIRV_Cross_Output stage_output;
     stage_output._5 = _5;
+    // RenoDX debug branch: shader category coloring.
+    stage_output._5 = ApplyShaderDebugColor(stage_output._5);
     return stage_output;
 }
