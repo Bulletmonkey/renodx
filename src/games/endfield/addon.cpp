@@ -263,6 +263,7 @@ struct DebugShaderCategory {
 
 std::vector<DebugShaderCategory> debug_shader_categories = {
     {"ao", "Ambient Occlusion", 0.f, {
+        {0x02D76FA7u},
         {0x55164654u},
         {0x85BD40EFu},
         {0x902C57D5u},
@@ -278,7 +279,6 @@ std::vector<DebugShaderCategory> debug_shader_categories = {
     {"cubemap-ambient", "Cubemap Ambient", 0.f, {
         {0x01345507u},
         {0x0AFEFC8Fu},
-        {0x1D89E872u},
         {0x20BB91FDu},
         {0x3B7B7ED4u},
         {0x629026ECu},
@@ -316,10 +316,8 @@ std::vector<DebugShaderCategory> debug_shader_categories = {
         {0x4702C983u},
         {0x495BE4B7u},
         {0x508FE28Fu},
-        {0x54D1C7D3u},
         {0x57038FBCu},
         {0x629026ECu},
-        {0x723AA6A9u, 1.f, "Character tail glow; fog classification unverified"},
         {0x80312AA0u},
         {0x824C3260u},
         {0x8349AD92u},
@@ -351,6 +349,7 @@ std::vector<DebugShaderCategory> debug_shader_categories = {
     }},
     {"improved-gtao", "Improved GTAO", 0.f, {
         {0x01345507u},
+        {0x02D76FA7u},
         {0x06CA1331u},
         {0x0AFEFC8Fu},
         {0x1CD715AFu},
@@ -509,7 +508,7 @@ std::vector<DebugShaderCategory> debug_shader_categories = {
         {0xAB12CDAEu},
     }},
     {"waterfalls", "Waterfalls", 0.f, {
-        {0xC609222Au},
+        {0xAC8EA5CEu},
     }},
 };
 
@@ -2593,10 +2592,6 @@ bool OnDrawIndexed(
       }
       state.draw_call_vertex_count = 0;
     }
-    if (is_latency_bar_draw_candidate
-        && !IsVisible(shader_injection.ping_text_opacity)) {
-      return true;
-    }
     return false;
   }
 
@@ -2911,6 +2906,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         }
 
         const uint32_t improved_gtao_crcs[] = {
+            0x02D76FA7u,  // GTAO main (Endfield 1.5 depth-reconstructed normal permutation)
             0x902C57D5u,  // GTAO main
             0xAC758574u,  // GTAO temporal
         };
