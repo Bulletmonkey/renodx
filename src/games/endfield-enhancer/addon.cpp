@@ -164,6 +164,21 @@ renodx::utils::settings::Settings settings = {
         .labels = {"Off", "On"},
         .tint = kVisualTint,
     },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "- Addon developed by ItsTheSewerRat.",
+        .section = "About",
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "- Many thanks to ShortFuse for RenoDX.",
+        .section = "About",
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "- Special thanks to RankFTW.",
+        .section = "About",
+    },
 };
 
 void OnOverlay(reshade::api::effect_runtime* runtime) {
@@ -208,6 +223,8 @@ void OnPresent(
 
 extern "C" __declspec(dllexport) const char* const NAME =
     "RenoDX: Arknights Endfield Enhancer";
+extern "C" __declspec(dllexport) const char* const AUTHOR =
+    "ItsTheSewerRat";
 extern "C" __declspec(dllexport) const char* const DESCRIPTION =
     "FPS, GTAO, LOD, and HDR frame-generation improvements for Arknights: Endfield";
 

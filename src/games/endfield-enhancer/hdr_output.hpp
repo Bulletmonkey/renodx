@@ -968,21 +968,6 @@ inline bool ResolveBarrierDispatch(PFN_vkGetDeviceProcAddr get_proc, VkDevice de
   return true;
 }
 
-inline bool IsSupportedBarrierHost(HMODULE host) {
-  if (host == nullptr) return false;
-  __try {
-    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(host);
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 || dos->e_lfanew > 0x1000) return false;
-    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(reinterpret_cast<const uint8_t*>(host) + dos->e_lfanew);
-    // Deployed ReShade 6.8.0.1, SHA-256 recorded with the release candidate.
-    return nt->Signature == IMAGE_NT_SIGNATURE && nt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64
-           && nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC
-           && nt->FileHeader.TimeDateStamp == 0x6A8B504Bu && nt->OptionalHeader.SizeOfImage == 0x59A000u;
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return false;
-  }
-}
-
 inline bool IsBarrierHostCode(HMODULE host, const void* address) {
   MEMORY_BASIC_INFORMATION info = {};
   if (address == nullptr || VirtualQuery(address, &info, sizeof(info)) != sizeof(info)
@@ -993,13 +978,13 @@ inline bool IsBarrierHostCode(HMODULE host, const void* address) {
 
 inline bool AttachHooks(HMODULE interposer, VkDevice device) {
   const HMODULE host = reshade::internal::get_reshade_module_handle();
-  if (!IsSupportedBarrierHost(host)
+  if (host == nullptr
       || !ResolveBarrierDispatch(reinterpret_cast<PFN_vkGetDeviceProcAddr>(GetProcAddress(host, "vkGetDeviceProcAddr")),
                                  device, &pipeline_barrier, &pipeline_barrier2)
       || !IsBarrierHostCode(host, reinterpret_cast<const void*>(pipeline_barrier))
       || (pipeline_barrier2 != nullptr && !IsBarrierHostCode(host, reinterpret_cast<const void*>(pipeline_barrier2)))) {
     reshade::log::message(reshade::log::level::error,
-                          "Endfield HDR v36: unsupported ReShade build/device barrier dispatch; hook transaction refused.");
+                          "Endfield HDR v36: unavailable or invalid ReShade device barrier dispatch; hook transaction refused.");
     return false;
   }
   bind_descriptor_sets = reinterpret_cast<PFN_vkCmdBindDescriptorSets>(

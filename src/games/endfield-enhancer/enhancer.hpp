@@ -93,7 +93,6 @@ inline std::mutex streamline_install_mutex;
 inline std::atomic_bool frame_generation_presenting = false;
 inline std::atomic_bool hdr_format_logged = false;
 inline std::atomic_bool hdr_bridge_missing_logged = false;
-inline std::atomic_bool unsupported_streamline_logged = false;
 inline std::atomic_bool hdr_swapchain_logged = false;
 inline std::atomic_bool hdr_hudless_suppressed_logged = false;
 inline std::atomic_bool frame_generation_paused = true;
@@ -310,23 +309,6 @@ inline sl::Result HookedSetFrameGenerationOptions(
   return ForwardFrameGenerationOptionsLocked(viewport, options);
 }
 
-inline bool IsSupportedStreamlineBuild(HMODULE interposer) {
-  constexpr DWORD kSupportedTimestamp = 0x6981C91A;
-  constexpr DWORD kSupportedImageSize = 0x8F000;
-  __try {
-    const auto* dos_header = reinterpret_cast<const IMAGE_DOS_HEADER*>(interposer);
-    const auto* nt_headers = reinterpret_cast<const IMAGE_NT_HEADERS64*>(
-        reinterpret_cast<const uint8_t*>(interposer) + dos_header->e_lfanew);
-    return dos_header->e_magic == IMAGE_DOS_SIGNATURE
-           && nt_headers->Signature == IMAGE_NT_SIGNATURE
-           && nt_headers->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64
-           && nt_headers->FileHeader.TimeDateStamp == kSupportedTimestamp
-           && nt_headers->OptionalHeader.SizeOfImage == kSupportedImageSize;
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return false;
-  }
-}
-
 inline bool UseHDRFrameGenerationPath() {
   return hdr_frame_generation >= 0.5f
          && endfield::vulkan_loader::IsHDRLoaderReady();
@@ -431,14 +413,6 @@ inline bool InstallStreamlineHook(reshade::api::device* device) {
 
   HMODULE interposer = GetModuleHandleW(L"sl.interposer.dll");
   if (interposer == nullptr) return false;
-
-  if (!IsSupportedStreamlineBuild(interposer)) {
-    if (!unsupported_streamline_logged.exchange(true)) {
-      Log(reshade::log::level::error,
-          "Endfield enhancer: unsupported sl.interposer.dll build; DLSS-G hooks were not installed.");
-    }
-    return false;
-  }
 
   auto* get_feature_function = reinterpret_cast<PFun_slGetFeatureFunction*>(
       GetProcAddress(interposer, "slGetFeatureFunction"));
