@@ -33,6 +33,7 @@
 #include "../../utils/state.hpp"
 #include "../../utils/swapchain.hpp"
 #include "./shared.h"
+#include "./renderer_guard.hpp"
 
 namespace {
 
@@ -193,11 +194,13 @@ void UpdateReshadeResolutionUniforms(
 }
 
 void OnReshadeReloadedEffects(reshade::api::effect_runtime* runtime) {
+  if (!endfield::renderer::IsSupported(runtime->get_device())) return;
   const std::lock_guard lock(resolution_uniform_mutex);
   resolution_uniform_caches.erase(runtime);
 }
 
 void OnDestroyEffectRuntime(reshade::api::effect_runtime* runtime) {
+  if (!endfield::renderer::IsSupported(runtime->get_device())) return;
   const std::lock_guard lock(resolution_uniform_mutex);
   resolution_uniform_caches.erase(runtime);
 }
@@ -216,6 +219,7 @@ void OnReshadeBeginEffects(reshade::api::effect_runtime* runtime,
                            reshade::api::command_list* cmd_list,
                            reshade::api::resource_view rtv,
                            reshade::api::resource_view rtv_srgb) {
+  if (!endfield::renderer::IsSupported(runtime->get_device())) return;
   // Only intercept if bypass is enabled AND we're not currently in bypass render
   // When bypass is disabled (current_render_reshade_before_ui == 0), let ReShade render normally
   if (current_render_reshade_before_ui != 0.f && !bypass_render_active) {
@@ -228,6 +232,7 @@ void OnReshadeFinishEffects(reshade::api::effect_runtime* runtime,
                             reshade::api::command_list* cmd_list,
                             reshade::api::resource_view rtv,
                             reshade::api::resource_view rtv_srgb) {
+  if (!endfield::renderer::IsSupported(runtime->get_device())) return;
   // Only re-enable if bypass is enabled AND we disabled them
   if (current_render_reshade_before_ui != 0.f && !bypass_render_active) {
     runtime->set_effects_state(true);
@@ -306,11 +311,12 @@ std::shared_mutex vfx_handle_mutex;
 std::unordered_map<uint64_t, uint32_t> vfx_handle_shaders;
 
 void OnInitVfxResource(
-    reshade::api::device* /*device*/,
+    reshade::api::device* device,
     const reshade::api::resource_desc& desc,
     const reshade::api::subresource_data* initial_data,
     reshade::api::resource_usage /*initial_state*/,
     reshade::api::resource resource) {
+  if (!endfield::renderer::IsSupported(device)) return;
   if (resource.handle == 0u
       || initial_data == nullptr
       || initial_data->data == nullptr
@@ -340,17 +346,19 @@ void OnInitVfxResource(
   vfx_handle_shaders[resource.handle] = match->shader_crc;
 }
 
-void OnDestroyVfxResource(reshade::api::device* /*device*/, reshade::api::resource resource) {
+void OnDestroyVfxResource(reshade::api::device* device, reshade::api::resource resource) {
+  if (!endfield::renderer::IsSupported(device)) return;
   const std::lock_guard lock(vfx_handle_mutex);
   vfx_handle_shaders.erase(resource.handle);
 }
 
 void OnInitVfxResourceView(
-    reshade::api::device* /*device*/,
+    reshade::api::device* device,
     reshade::api::resource resource,
     reshade::api::resource_usage /*usage*/,
     const reshade::api::resource_view_desc& /*desc*/,
     reshade::api::resource_view view) {
+  if (!endfield::renderer::IsSupported(device)) return;
   const std::lock_guard lock(vfx_handle_mutex);
   const auto match = vfx_handle_shaders.find(resource.handle);
   if (match != vfx_handle_shaders.end()) {
@@ -358,20 +366,24 @@ void OnInitVfxResourceView(
   }
 }
 
-void OnDestroyVfxResourceView(reshade::api::device* /*device*/, reshade::api::resource_view view) {
+void OnDestroyVfxResourceView(reshade::api::device* device, reshade::api::resource_view view) {
+  if (!endfield::renderer::IsSupported(device)) return;
   const std::lock_guard lock(vfx_handle_mutex);
   vfx_handle_shaders.erase(view.handle);
 }
 
 void OnInitVfxCommandList(reshade::api::command_list* cmd_list) {
+  if (!endfield::renderer::IsSupported(cmd_list->get_device())) return;
   renodx::utils::data::Create<VfxCommandListData>(cmd_list);
 }
 
 void OnDestroyVfxCommandList(reshade::api::command_list* cmd_list) {
+  if (!endfield::renderer::IsSupported(cmd_list->get_device())) return;
   renodx::utils::data::Delete<VfxCommandListData>(cmd_list);
 }
 
 void OnResetVfxCommandList(reshade::api::command_list* cmd_list) {
+  if (!endfield::renderer::IsSupported(cmd_list->get_device())) return;
   auto* data = renodx::utils::data::Get<VfxCommandListData>(cmd_list);
   if (data != nullptr) {
     data->pixel_srv_t0 = {0u};
@@ -389,6 +401,7 @@ void OnPushVfxDescriptors(
     reshade::api::pipeline_layout /*layout*/,
     uint32_t layout_param,
     const reshade::api::descriptor_table_update& update) {
+  if (!endfield::renderer::IsSupported(cmd_list->get_device())) return;
   if (layout_param != 1u
       || update.type != reshade::api::descriptor_type::shader_resource_view
       || update.binding != 0u
@@ -1543,6 +1556,7 @@ inline constexpr auto OnUiCommand = []<typename Arguments>(
     renodx::utils::command_action::CommandContext<Arguments>& context)
     -> renodx::utils::command_action::CallbackResult<
         renodx::utils::command_action::CommandContext<Arguments>> {
+  if (!endfield::renderer::IsSupported(context.cmd_list->get_device())) return {};
   if constexpr (std::is_same_v<Arguments, renodx::utils::command_action::DrawIndexedArguments>) {
     return {.bypass = OnDrawIndexed(
                 context.cmd_list, context.arguments.index_count,
@@ -1563,6 +1577,7 @@ void OnPresent(reshade::api::command_queue* queue,
                const reshade::api::rect* dest_rect,
                uint32_t dirty_rect_count,
                const reshade::api::rect* dirty_rects) {
+  if (!endfield::renderer::IsSupported(queue->get_device())) return;
   static uint32_t random_state = 0x9E3779B9u;
   random_state = random_state * 1664525u + 1013904223u;
   shader_injection.custom_random = static_cast<float>(random_state >> 8u) / 16777216.f;
@@ -1929,6 +1944,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         reshade::register_event<reshade::addon_event::destroy_resource_view>(OnDestroyVfxResourceView);
         reshade::register_event<reshade::addon_event::push_descriptors>(OnPushVfxDescriptors);
 
+        endfield::renderer::Configure(&custom_shaders);
         initialized = true;
       }
 
@@ -1951,6 +1967,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   }
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
+  endfield::renderer::UseOverlay(fdw_reason);
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     renodx::utils::command_action::Register(
@@ -1960,6 +1977,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   }
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
   renodx::utils::state::Use(fdw_reason);
+  endfield::renderer::UseRuntimeEvents(fdw_reason);
 
   if (fdw_reason == DLL_PROCESS_DETACH) {
     reshade::unregister_addon(h_module);
