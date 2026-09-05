@@ -166,6 +166,13 @@ renodx::utils::settings::Settings settings = {
     },
 };
 
+void OnOverlay(reshade::api::effect_runtime* runtime) {
+  // Match ReShade's standard text size while retaining its global UI scaling.
+  ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase);
+  renodx::utils::settings::OnRegisterOverlay(runtime);
+  ImGui::PopFont();
+}
+
 void OnPresent(
     reshade::api::command_queue*,
     reshade::api::swapchain* swapchain,
@@ -234,7 +241,16 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
       break;
   }
 
+  if (reason == DLL_PROCESS_DETACH) {
+    reshade::unregister_overlay(renodx::utils::settings::overlay_title.c_str(), OnOverlay);
+  }
   renodx::utils::settings::Use(reason, &settings);
+  if (reason == DLL_PROCESS_ATTACH) {
+    reshade::unregister_overlay(
+        renodx::utils::settings::overlay_title.c_str(),
+        renodx::utils::settings::OnRegisterOverlay);
+    reshade::register_overlay(renodx::utils::settings::overlay_title.c_str(), OnOverlay);
+  }
   renodx::utils::swapchain::Use(reason);
   // Cross-addon utility teardown may transfer event ownership. Keep this
   // addon registered until every utility has finished unregistering.
