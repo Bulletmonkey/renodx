@@ -11,6 +11,7 @@
 #include "../../utils/swapchain.hpp"
 #include "./enhancer.hpp"
 #include "./lod.hpp"
+#include "./vulkan_loader_api.hpp"
 
 namespace {
 
@@ -18,6 +19,27 @@ constexpr uint32_t kLimiterResumeDelayFrames = 120;
 constexpr uint32_t kFpsTint = 0x5C8FEA;
 constexpr uint32_t kVisualTint = kFpsTint;
 std::atomic_uint32_t limiter_resume_delay = kLimiterResumeDelayFrames;
+bool hdr_requested_at_startup = false;
+bool hdr_available = false;
+
+const char* GetHDRUnavailableReason(reshade::api::device_api api) {
+  if (api == reshade::api::device_api::d3d11) {
+    return "DLSS-G HDR Patch is unavailable in DirectX 11. Launch the game with Vulkan.";
+  }
+  if (api != reshade::api::device_api::vulkan) return "DLSS-G HDR Patch requires Vulkan.";
+  if (!endfield::vulkan_loader::IsInstalled()) {
+    return "DLSS-G HDR Patch requires the bundled vulkan-1.dll next to Endfield.exe. Install it and restart the game.";
+  }
+  return nullptr;
+}
+
+bool OnCreateDevice(reshade::api::device_api api, uint32_t&) {
+  // Register before Vulkan device initialization; DX11 never needs the HDR path.
+  if (hdr_requested_at_startup && GetHDRUnavailableReason(api) == nullptr) {
+    endfield::hdr_output::UseEvents(DLL_PROCESS_ATTACH);
+  }
+  return false;
+}
 
 void OnInitSwapchain(reshade::api::swapchain* swapchain, bool resize) {
   (void)resize;
@@ -54,6 +76,7 @@ void UpdateFpsLimitFormat(renodx::utils::settings::Setting* setting) {
 renodx::utils::settings::Setting* fps_limit_setting;
 renodx::utils::settings::Setting* frame_generation_fps_limit_setting;
 renodx::utils::settings::Setting* background_fps_limit_setting;
+renodx::utils::settings::Setting* hdr_warning_setting;
 
 bool IsEndfieldProcess() {
   wchar_t process_path[MAX_PATH] = {};
@@ -151,6 +174,14 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "Enables HDR with DLSS Frame Generation. Requires the base Endfield RenoDX addon and bundled vulkan-1.dll. Restart required.",
         .labels = {"Off", "On"},
         .tint = kVisualTint,
+        .is_enabled = [] { return hdr_available; },
+    },
+    hdr_warning_setting = new renodx::utils::settings::Setting{
+        .key = "HDRFrameGenerationWarning",
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .section = "Visual Improvements",
+        .tint = 0xE6AD45,
+        .is_visible = [] { return !hdr_available; },
     },
     new renodx::utils::settings::Setting{
         .key = "ForceHighestGeometryLOD",
@@ -182,6 +213,10 @@ renodx::utils::settings::Settings settings = {
 };
 
 void OnOverlay(reshade::api::effect_runtime* runtime) {
+  // Use this runtime's renderer, not DLL presence or a temporary probe device.
+  const char* reason = GetHDRUnavailableReason(runtime->get_device()->get_api());
+  hdr_available = reason == nullptr;
+  hdr_warning_setting->label = reason == nullptr ? "" : reason;
   // Match ReShade's standard text size while retaining its global UI scaling.
   ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase);
   renodx::utils::settings::OnRegisterOverlay(runtime);
@@ -235,9 +270,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
   switch (reason) {
     case DLL_PROCESS_ATTACH:
       if (!reshade::register_addon(h_module)) return FALSE;
-      endfield::hdr_output::UseEvents(reason);
       renodx::utils::settings::use_presets = false;
       renodx::utils::settings::overlay_title = "Endfield Enhancer";
+      reshade::register_event<reshade::addon_event::create_device>(OnCreateDevice);
       reshade::register_event<reshade::addon_event::init_device>(OnInitDevice);
       reshade::register_event<reshade::addon_event::init_swapchain>(
           OnInitSwapchain);
@@ -252,6 +287,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
       reshade::unregister_event<reshade::addon_event::init_swapchain>(
           OnInitSwapchain);
       reshade::unregister_event<reshade::addon_event::init_device>(OnInitDevice);
+      reshade::unregister_event<reshade::addon_event::create_device>(OnCreateDevice);
+      reshade::unregister_event<reshade::addon_event::copy_resource>(endfield::hdr_output::OnPresentationCopy);
+      reshade::unregister_event<reshade::addon_event::copy_texture_region>(endfield::hdr_output::OnPresentationCopyRegion);
       endfield::lod::Shutdown();
       endfield::enhancer::Shutdown();
       endfield::hdr_output::UseEvents(reason);
@@ -263,6 +301,13 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
   }
   renodx::utils::settings::Use(reason, &settings);
   if (reason == DLL_PROCESS_ATTACH) {
+    hdr_requested_at_startup = endfield::enhancer::hdr_frame_generation >= 0.5f;
+    if (hdr_requested_at_startup && endfield::vulkan_loader::IsInstalled()) {
+      // Reserve copy observation before the base addon can consume these events.
+      // The callbacks stay inactive until Vulkan HDR hooks are installed.
+      reshade::register_event<reshade::addon_event::copy_resource>(endfield::hdr_output::OnPresentationCopy);
+      reshade::register_event<reshade::addon_event::copy_texture_region>(endfield::hdr_output::OnPresentationCopyRegion);
+    }
     reshade::unregister_overlay(
         renodx::utils::settings::overlay_title.c_str(),
         renodx::utils::settings::OnRegisterOverlay);

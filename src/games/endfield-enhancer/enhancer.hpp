@@ -15,7 +15,6 @@
 #include <Windows.h>
 #include <include/reshade.hpp>
 
-#include "./vulkan_loader_api.hpp"
 #include "./hdr_output.hpp"
 
 namespace endfield::enhancer {
@@ -88,11 +87,11 @@ inline std::atomic_bool gtao_writes_enabled = false;
 inline bool api_ready = false;
 inline bool fps_ready = false;
 inline bool streamline_hook_installed = false;
+inline bool hdr_hooks_installed = false;
 inline std::mutex streamline_options_mutex;
 inline std::mutex streamline_install_mutex;
 inline std::atomic_bool frame_generation_presenting = false;
 inline std::atomic_bool hdr_format_logged = false;
-inline std::atomic_bool hdr_bridge_missing_logged = false;
 inline std::atomic_bool hdr_swapchain_logged = false;
 inline std::atomic_bool hdr_hudless_suppressed_logged = false;
 inline std::atomic_bool frame_generation_paused = true;
@@ -233,7 +232,6 @@ inline bool WriteInt(Il2CppMethod method, int value) {
 inline bool ResolveFpsMethods() {
   if (fps_ready) return true;
   if (!ResolveApi()) return false;
-  const bool was_fps_ready = fps_ready;
 
   Il2CppImage core_image = FindImage("UnityEngine.CoreModule");
   if (core_image == nullptr) return false;
@@ -251,7 +249,7 @@ inline bool ResolveFpsMethods() {
               && get_vsync_count != nullptr
               && set_vsync_count != nullptr;
 
-  if (fps_ready && !was_fps_ready) {
+  if (fps_ready) {
     Log(reshade::log::level::info,
         "Endfield enhancer: resolved FPS controls from IL2CPP metadata.");
   }
@@ -262,15 +260,9 @@ __declspec(noinline) inline sl::Result ForwardFrameGenerationOptionsLocked(
     const sl::ViewportHandle& viewport,
     const sl::DLSSGOptions& options) {
   sl::DLSSGOptions forwarded_options = options;
-  const bool enable_hdr = hdr_frame_generation >= 0.5f
-                          && endfield::vulkan_loader::IsHDRLoaderReady();
+  const bool enable_hdr = hdr_hooks_installed;
   if (enable_hdr) {
     forwarded_options.colorBufferFormat = kHDR10Format;
-  } else if (hdr_frame_generation >= 0.5f
-             && !hdr_bridge_missing_logged.exchange(true)) {
-    Log(
-        reshade::log::level::warning,
-        "Endfield enhancer: DLSS-G HDR patch is waiting for the bundled Vulkan loader; HDR formats were left unchanged.");
   }
 
   frame_generation_presenting.store(false, std::memory_order_release);
@@ -309,15 +301,10 @@ inline sl::Result HookedSetFrameGenerationOptions(
   return ForwardFrameGenerationOptionsLocked(viewport, options);
 }
 
-inline bool UseHDRFrameGenerationPath() {
-  return hdr_frame_generation >= 0.5f
-         && endfield::vulkan_loader::IsHDRLoaderReady();
-}
-
 inline const sl::ResourceTag* FilterFrameGenerationTags(
     const sl::ResourceTag* tags,
     uint32_t num_tags) {
-  if (!UseHDRFrameGenerationPath() || tags == nullptr || num_tags == 0u) {
+  if (!hdr_hooks_installed || tags == nullptr || num_tags == 0u) {
     return tags;
   }
 
@@ -383,7 +370,7 @@ inline VkResult VKAPI_CALL HookedStreamlineCreateSwapchain(
     const VkAllocationCallbacks* allocator,
     VkSwapchainKHR* swapchain) {
   VkSwapchainCreateInfoKHR hdr_create_info = {};
-  const bool use_hdr = create_info != nullptr && UseHDRFrameGenerationPath();
+  const bool use_hdr = create_info != nullptr && hdr_hooks_installed;
   if (use_hdr) {
     hdr_create_info = *create_info;
     hdr_create_info.imageFormat = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
@@ -410,6 +397,7 @@ inline bool InstallStreamlineHook(reshade::api::device* device) {
   const std::lock_guard install_lock(streamline_install_mutex);
   if (streamline_hook_installed) return true;
   if (device == nullptr || device->get_api() != reshade::api::device_api::vulkan) return false;
+  if (!endfield::hdr_output::events_registered && fps_limit <= 0.f && frame_generation_fps_limit <= 0.f) return false;
 
   HMODULE interposer = GetModuleHandleW(L"sl.interposer.dll");
   if (interposer == nullptr) return false;
@@ -430,33 +418,32 @@ inline bool InstallStreamlineHook(reshade::api::device* device) {
 
   set_frame_generation_options =
       reinterpret_cast<PFun_slDLSSGSetOptions*>(set_options);
-  set_tags = reinterpret_cast<PFun_slSetTag*>(
-      GetProcAddress(interposer, "slSetTag"));
-  set_tags_for_frame = reinterpret_cast<PFun_slSetTagForFrame*>(
-      GetProcAddress(interposer, "slSetTagForFrame"));
-  streamline_create_swapchain = reinterpret_cast<PFN_vkCreateSwapchainKHR>(
-      GetProcAddress(interposer, "vkCreateSwapchainKHR"));
-  if (set_tags == nullptr
-      || set_tags_for_frame == nullptr
-      || streamline_create_swapchain == nullptr) {
-    set_frame_generation_options = nullptr;
-    set_tags = nullptr;
-    set_tags_for_frame = nullptr;
-    streamline_create_swapchain = nullptr;
-    return false;
+  // FPS limiting only needs SetOptions. The HDR path is fixed at startup.
+  const bool enable_hdr = endfield::hdr_output::events_registered;
+  if (enable_hdr) {
+    set_tags = reinterpret_cast<PFun_slSetTag*>(
+        GetProcAddress(interposer, "slSetTag"));
+    set_tags_for_frame = reinterpret_cast<PFun_slSetTagForFrame*>(
+        GetProcAddress(interposer, "slSetTagForFrame"));
+    streamline_create_swapchain = reinterpret_cast<PFN_vkCreateSwapchainKHR>(
+        GetProcAddress(interposer, "vkCreateSwapchainKHR"));
+    if (set_tags == nullptr || set_tags_for_frame == nullptr || streamline_create_swapchain == nullptr) {
+      set_frame_generation_options = nullptr;
+      set_tags = nullptr;
+      set_tags_for_frame = nullptr;
+      streamline_create_swapchain = nullptr;
+      return false;
+    }
   }
 
   if (DetourTransactionBegin() != NO_ERROR) return false;
   if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
       || DetourAttach(&set_frame_generation_options, HookedSetFrameGenerationOptions)
              != NO_ERROR
-      || DetourAttach(&set_tags, HookedSetTags) != NO_ERROR
-      || DetourAttach(&set_tags_for_frame, HookedSetTagsForFrame) != NO_ERROR
-      || DetourAttach(
-             &streamline_create_swapchain,
-             HookedStreamlineCreateSwapchain)
-             != NO_ERROR
-      || !endfield::hdr_output::AttachHooks(interposer, reinterpret_cast<VkDevice>(device->get_native()))) {
+      || (enable_hdr && (DetourAttach(&set_tags, HookedSetTags) != NO_ERROR
+                         || DetourAttach(&set_tags_for_frame, HookedSetTagsForFrame) != NO_ERROR
+                         || DetourAttach(&streamline_create_swapchain, HookedStreamlineCreateSwapchain) != NO_ERROR
+                         || !endfield::hdr_output::AttachHooks(interposer, reinterpret_cast<VkDevice>(device->get_native()))))) {
     DetourTransactionAbort();
     set_frame_generation_options = nullptr;
     set_tags = nullptr;
@@ -473,11 +460,12 @@ inline bool InstallStreamlineHook(reshade::api::device* device) {
   }
 
   streamline_hook_installed = true;
-  endfield::hdr_output::capture_graphics.store(UseHDRFrameGenerationPath(), std::memory_order_relaxed);
-  endfield::hdr_output::RegisterDrawCallbacks();
-  Log(
-      reshade::log::level::info,
-      "Endfield HDR v36: native HDR bridge and descriptor replay enabled; copy routing waits for the original base output contract.");
+  hdr_hooks_installed = enable_hdr;
+  if (enable_hdr) {
+    endfield::hdr_output::capture_graphics.store(true, std::memory_order_relaxed);
+    endfield::hdr_output::RegisterDrawCallbacks();
+    Log(reshade::log::level::info, "Endfield HDR: native output hooks enabled.");
+  }
   return true;
 }
 
@@ -687,8 +675,9 @@ inline void OnPresent(reshade::api::device* device) {
 
   const bool unlock_enabled = fps_unlock >= 0.5f;
   const bool frame_generation_detection_requested =
-      fps_limit > 0.f || frame_generation_fps_limit > 0.f
-      || hdr_frame_generation >= 0.5f;
+      device != nullptr && device->get_api() == reshade::api::device_api::vulkan
+      && (fps_limit > 0.f || frame_generation_fps_limit > 0.f
+          || endfield::hdr_output::events_registered);
   if (unlock_enabled && !fps_ready
       && (present_count == 1 || present_count % 120 == 0)) {
     ResolveFpsMethods();
@@ -737,17 +726,17 @@ inline void Shutdown() {
     DetourTransactionAbort();
     return;
   }
-  if (streamline_hook_installed
+  if (hdr_hooks_installed
       && DetourDetach(&set_tags, HookedSetTags) != NO_ERROR) {
     DetourTransactionAbort();
     return;
   }
-  if (streamline_hook_installed
+  if (hdr_hooks_installed
       && DetourDetach(&set_tags_for_frame, HookedSetTagsForFrame) != NO_ERROR) {
     DetourTransactionAbort();
     return;
   }
-  if (streamline_hook_installed
+  if (hdr_hooks_installed
       && DetourDetach(
              &streamline_create_swapchain,
              HookedStreamlineCreateSwapchain)
@@ -760,7 +749,7 @@ inline void Shutdown() {
     DetourTransactionAbort();
     return;
   }
-  if (streamline_hook_installed && !endfield::hdr_output::DetachHooks()) {
+  if (hdr_hooks_installed && !endfield::hdr_output::DetachHooks()) {
     DetourTransactionAbort();
     return;
   }
@@ -768,6 +757,7 @@ inline void Shutdown() {
     render_path_hook_installed = false;
     gtao_ready = false;
     streamline_hook_installed = false;
+    hdr_hooks_installed = false;
     set_frame_generation_options = nullptr;
     set_tags = nullptr;
     set_tags_for_frame = nullptr;

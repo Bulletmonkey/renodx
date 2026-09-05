@@ -15,19 +15,10 @@ enum Status : uint32_t {
   STREAMLINE_READY = 1u << 2u,
 };
 
-using GetStatus = uint32_t(WINAPI*)();
-
-inline bool IsHDRLoaderReady() {
-  static const GetStatus get_status = []() {
-    const HMODULE loader = GetModuleHandleW(L"vulkan-1.dll");
-    return loader == nullptr
-        ? nullptr
-        : reinterpret_cast<GetStatus>(GetProcAddress(loader, kStatusExport));
-  }();
-  if (get_status == nullptr) return false;
-  constexpr uint32_t required =
-      SYSTEM_VULKAN_READY | RESHADE_READY | STREAMLINE_READY;
-  return (get_status() & required) == required;
+inline bool IsInstalled() {
+  // Identify our loaded bridge, not the system Vulkan loader or a file on disk.
+  const HMODULE loader = GetModuleHandleW(L"vulkan-1.dll");
+  return loader != nullptr && GetProcAddress(loader, kStatusExport) != nullptr;
 }
 
 }  // namespace endfield::vulkan_loader
