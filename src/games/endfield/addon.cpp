@@ -227,6 +227,16 @@ bool OnCopyVfxDescriptorTables(
 
 renodx::mods::shader::CustomShaders custom_shaders;
 
+bool UpgradePostProcessTarget(reshade::api::command_list* cmd_list) {
+  const auto rtvs = renodx::utils::swapchain::GetRenderTargets(cmd_list);
+  // These full-screen passes overwrite one color target, without scene depth.
+  if (rtvs.size() != 1u) return true;
+  if (renodx::mods::swapchain::ActivateCloneHotSwap(cmd_list->get_device(), rtvs[0])) {
+    renodx::mods::swapchain::RewriteRenderTargets(cmd_list, 1u, rtvs.data(), {0});
+  }
+  return true;
+}
+
 void RegisterCustomShader(
     uint32_t crc32,
     const std::span<const uint8_t>& bytecode) {
@@ -238,6 +248,22 @@ void InitializeCustomShaders() {
 #undef CustomShaderEntry
 #define CustomShaderEntry(crc32) RegisterCustomShader(crc32, __##crc32)
   __ALL_CUSTOM_SHADERS;
+  // Activate only known HDR post-process outputs. Other RGBA8 resources,
+  // including persistent snow data, remain on their original images.
+  constexpr uint32_t post_process_shaders[] = {
+      0x0487B658, 0x10BC9694, 0x13C57353, 0x19410DCF,
+      0x260CB7DE, 0x2B3968F0, 0x36E19AC8, 0x4B3E474E,
+      0x56850F7A, 0x62334C44, 0x6D424A74, 0x719652B4,
+      0x7D7AFCEB, 0x8B13BC9B, 0x8B4A9C41, 0x8E6BF5FC,
+      0x8E8A5512, 0x9381A817, 0x948C5FB7, 0x96DD18A0,
+      0xB1925280, 0xB36DA950, 0xB6010B6B, 0xD2389A17,
+      0xD963D715, 0xE87BBC9E, 0xE928C915, 0xEDE92E55,
+      0xEF7FFAF0, 0xF02F2F18, 0xFE6983A2, 0xFF9919AD,
+      0xEF55D954,  // Post-process blit / optional sharpening, before UI.
+  };
+  for (const auto crc : post_process_shaders) {
+    custom_shaders.at(crc).on_draw = UpgradePostProcessTarget;
+  }
 #undef CustomShaderEntry
 #define CustomShaderEntry(crc32) \
   {crc32, renodx::mods::shader::CreateCustomShader(crc32, __##crc32)}
@@ -2548,6 +2574,18 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             .view_upgrades = renodx::utils::resource::VIEW_UPGRADES_RGBA16F,
             .usage_include = reshade::api::resource_usage::render_target,
             .name = "Endfield swapchain-size linear intermediate Vulkan upgrade",
+        });
+        // Non-native render sizes need the same HDR range. Eligibility alone
+        // does not activate a clone: the post-process callback selects it.
+        renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
+            .old_format = reshade::api::format::r8g8b8a8_unorm,
+            .new_format = reshade::api::format::r16g16b16a16_float,
+            .ignore_size = true,
+            .use_resource_view_cloning = true,
+            .use_resource_view_hot_swap = true,
+            .view_upgrades = renodx::utils::resource::VIEW_UPGRADES_RGBA16F,
+            .usage_include = reshade::api::resource_usage::render_target,
+            .name = "Endfield shader-selected HDR post-process intermediate",
         });
 
         constexpr std::array<uint32_t, 8> reshade_before_ui_crcs = {
