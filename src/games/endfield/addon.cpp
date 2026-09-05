@@ -38,6 +38,16 @@ namespace {
 
 renodx::mods::shader::CustomShaders custom_shaders = {__ALL_CUSTOM_SHADERS};
 
+bool UpgradePostProcessTarget(reshade::api::command_list* cmd_list) {
+  const auto rtvs = renodx::utils::swapchain::GetRenderTargets(cmd_list);
+  // These full-screen passes overwrite one color target, without scene depth.
+  if (rtvs.size() != 1u) return true;
+  if (renodx::mods::swapchain::ActivateCloneHotSwap(cmd_list->get_device(), rtvs[0])) {
+    renodx::mods::swapchain::RewriteRenderTargets(cmd_list, 1u, rtvs.data(), {0});
+  }
+  return true;
+}
+
 ShaderInjectData shader_injection;
 
 // Compiled DXBC patches address these existing b13 fields directly.
@@ -1772,20 +1782,43 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         }
 
 
-        renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
-        .old_format = reshade::api::format::r8g8b8a8_typeless,
-        .new_format = reshade::api::format::r16g16b16a16_float,
-        .ignore_size = true,
-        //.use_resource_view_cloning = true,
-        .usage_include = reshade::api::resource_usage::render_target,
-        });
-        renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
-            .old_format = reshade::api::format::r8g8b8a8_unorm,
-            .new_format = reshade::api::format::r16g16b16a16_float,
-            .ignore_size = true,
-            //.use_resource_view_cloning = true,
-            .usage_include = reshade::api::resource_usage::render_target,
-        });
+        for (const auto format : {reshade::api::format::r8g8b8a8_typeless,
+                                  reshade::api::format::r8g8b8a8_unorm}) {
+          // Keep internal render-resolution data out of the direct upgrade.
+          renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
+              .old_format = format,
+              .new_format = reshade::api::format::r16g16b16a16_float,
+              .ignore_size = false,
+              .usage_include = reshade::api::resource_usage::render_target,
+              .name = "Endfield swapchain-size linear intermediate DX11 upgrade",
+          });
+          // Eligibility alone does not activate a clone: only the known
+          // post-process shaders below select their outputs, at any size.
+          renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
+              .old_format = format,
+              .new_format = reshade::api::format::r16g16b16a16_float,
+              .ignore_size = true,
+              .use_resource_view_cloning = true,
+              .use_resource_view_hot_swap = true,
+              .usage_include = reshade::api::resource_usage::render_target,
+              .name = "Endfield shader-selected HDR post-process intermediate",
+          });
+        }
+        constexpr uint32_t post_process_shaders[] = {
+            0x03DF538F, 0x0497F492, 0x0BB60C37, 0x1E0C02EC,
+            0x22696E6B, 0x231F3B6B, 0x2729B430, 0x2970B6A6,
+            0x29EA566F, 0x2AD9D42E, 0x32A5505C, 0x332E0835,
+            0x4C67C490, 0x52A77DB9, 0x52AC7E00, 0x63AB936D,
+            0x6BBE99DA, 0x7B0B4041, 0x81073AFC, 0x86D9DED1,
+            0x89929873, 0x8F2C3A6B, 0x93EC2A6B, 0x96ABA1A0,
+            0xACB34505, 0xACCCB347, 0xB06827CB, 0xBC012E29,
+            0xC32F6D7B, 0xD589DFEB, 0xD8401285, 0xDBC83F91,
+            0xDC23C161, 0xFBD38A69, 0xFFFBB3BD,
+            0x7CF14F74,  // Post-process blit / optional sharpening, before UI.
+        };
+        for (const auto crc : post_process_shaders) {
+          custom_shaders.at(crc).on_draw = UpgradePostProcessTarget;
+        }
         /*
         renodx::mods::swapchain::swap_chain_upgrade_targets.push_back({
             .old_format = reshade::api::format::r10g10b10a2_unorm,
