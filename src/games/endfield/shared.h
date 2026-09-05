@@ -101,6 +101,11 @@ struct ShaderInjectData {
   float ui_aspect_ratio;
   float improved_gtao;
   float fake_cloud_shadows;
+  // Append only: existing compiled replacements use the first 15 float4 slots.
+  float latency_bar_viewport_width;
+  float latency_bar_viewport_height;
+  float latency_bar_viewport_x;
+  float latency_bar_viewport_y;
 };
 
 #ifndef __cplusplus

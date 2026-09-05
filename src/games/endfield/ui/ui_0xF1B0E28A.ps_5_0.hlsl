@@ -35,5 +35,20 @@ void main(
   o0.xyz = r0.xyz * r0.www;
   o0.w = cb1[11].x * -r0.w + r0.w;
 
-  if (UI_VISIBILITY < 0.5f) o0 = 0;
+  // RenoDX: use the fixed 1.5 pixel mask after draw-specific classification.
+  if (UI_VISIBILITY < 0.5f) discard;
+  float2 viewport_size = float2(shader_injection.latency_bar_viewport_width,
+                               shader_injection.latency_bar_viewport_height);
+  float2 uv_pixel_size = fwidth(v2);
+  if (LATENCY_BAR_DRAW_OPACITY < 0.5f && all(viewport_size > 0.0f)) {
+    float2 pixel_position = v0.xy - float2(shader_injection.latency_bar_viewport_x,
+                                         shader_injection.latency_bar_viewport_y);
+    float2 screen_uv = pixel_position / viewport_size;
+    bool is_hud_latency_bar = screen_uv.x >= 0.005f && screen_uv.x <= 0.035f
+                           && screen_uv.y >= 0.95f && screen_uv.y <= 0.995f;
+    bool is_transition_latency_bar = pixel_position.x >= 20.0f && pixel_position.x <= 60.0f
+                                  && pixel_position.y >= 15.0f && pixel_position.y <= 50.0f
+                                  && uv_pixel_size.x >= 0.1f && uv_pixel_size.y >= 0.05f;
+    if (is_hud_latency_bar || is_transition_latency_bar) discard;
+  }
 }

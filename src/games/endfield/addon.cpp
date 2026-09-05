@@ -8,11 +8,13 @@
 // #define DEBUG_LEVEL_0
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <cwchar>
 #include <mutex>
 #include <shared_mutex>
 #include <sstream>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -24,6 +26,7 @@
 #include "../../mods/shader.hpp"
 #include "../../mods/swapchain.hpp"
 #include "../../utils/bitwise.hpp"
+#include "../../utils/command_action.hpp"
 #include "../../utils/data.hpp"
 #include "../../utils/hash.hpp"
 #include "../../utils/settings.hpp"
@@ -36,6 +39,13 @@ namespace {
 renodx::mods::shader::CustomShaders custom_shaders = {__ALL_CUSTOM_SHADERS};
 
 ShaderInjectData shader_injection;
+
+// Compiled DXBC patches address these existing b13 fields directly.
+static_assert(offsetof(ShaderInjectData, fog_modification) == 49 * sizeof(float));
+static_assert(offsetof(ShaderInjectData, cubemap_ambient_link) == 53 * sizeof(float));
+static_assert(offsetof(ShaderInjectData, glass_transparency) == 54 * sizeof(float));
+static_assert(offsetof(ShaderInjectData, improved_gtao) == 58 * sizeof(float));
+static_assert(offsetof(ShaderInjectData, latency_bar_viewport_width) == 60 * sizeof(float));
 
 const std::string build_date = __DATE__;
 const std::string build_time = __TIME__;
@@ -276,10 +286,10 @@ struct VfxBoostMatch {
 };
 
 constexpr VfxBoostMatch vfx_boost_matches[] = {
-    {0x97BF4335u, 0x512923BCu},
-    {0x4D4DDEBEu, 0xFA6BD53Au},
-    {0x50898C70u, 0x1A45F4EBu},
-    {0x1BF3323Du, 0xF38B0BAAu},
+    {0x1600CB92u, 0x512923BCu},
+    {0x3D5CB25Eu, 0xFA6BD53Au},
+    {0x2E4E8BA5u, 0x1A45F4EBu},
+    {0x49E8BE54u, 0xF38B0BAAu},
 };
 
 std::shared_mutex vfx_handle_mutex;
@@ -473,6 +483,18 @@ bool OnLatencyBarInject(reshade::api::command_list* cmd_list) {
   shader_injection.latency_bar_draw_opacity = data != nullptr
       ? data->latency_bar_draw_opacity
       : 1.f;
+  shader_injection.latency_bar_viewport_width = 0.f;
+  shader_injection.latency_bar_viewport_height = 0.f;
+  shader_injection.latency_bar_viewport_x = 0.f;
+  shader_injection.latency_bar_viewport_y = 0.f;
+  if (const auto* state = renodx::utils::state::GetCurrentState(cmd_list);
+      state != nullptr && !state->viewports.empty()) {
+    const auto& viewport = state->viewports[0];
+    shader_injection.latency_bar_viewport_width = viewport.width;
+    shader_injection.latency_bar_viewport_height = viewport.height;
+    shader_injection.latency_bar_viewport_x = viewport.x;
+    shader_injection.latency_bar_viewport_y = viewport.y;
+  }
   return true;
 }
 
@@ -1339,7 +1361,7 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
-        .label = "- Maintained by Rat for Arknights: Endfield 1.4.4",
+        .label = "- Maintained by Rat for Arknights: Endfield 1.5",
         .section = "About",
     },
     new renodx::utils::settings::Setting{
@@ -1477,7 +1499,8 @@ bool OnDrawIndexed(
   }
 
   // Detect UID text after the ping or post-combat shader
-  const bool uid_shader_candidate = pixel_shader_hash == 0xC2B8AB6Bu;
+  const bool uid_shader_candidate = pixel_shader_hash == 0xC2B8AB6Bu
+                                 || pixel_shader_hash == 0xECB4AA48u;
   data->is_uid_input_candidate = uid_geometry_candidate
                               && (data->is_ping_drawn || uid_shader_candidate);
 
@@ -1504,6 +1527,25 @@ bool OnDrawIndexed(
       show_latency_text);
   return true;
 }
+
+// Classify or consume UI draws before replacement callbacks inject or replay them.
+inline constexpr auto OnUiCommand = []<typename Arguments>(
+    renodx::utils::command_action::CommandContext<Arguments>& context)
+    -> renodx::utils::command_action::CallbackResult<
+        renodx::utils::command_action::CommandContext<Arguments>> {
+  if constexpr (std::is_same_v<Arguments, renodx::utils::command_action::DrawIndexedArguments>) {
+    return {.bypass = OnDrawIndexed(
+                context.cmd_list, context.arguments.index_count,
+                context.arguments.instance_count, context.arguments.first_index,
+                context.arguments.vertex_offset, context.arguments.first_instance)};
+  } else if constexpr (std::is_same_v<Arguments, renodx::utils::command_action::DrawArguments>) {
+    return {.bypass = OnDraw(
+                context.cmd_list, context.arguments.vertex_count,
+                context.arguments.instance_count, context.arguments.first_vertex,
+                context.arguments.first_instance)};
+  }
+  return {};
+};
 
 void OnPresent(reshade::api::command_queue* queue,
                reshade::api::swapchain* swapchain,
@@ -1790,6 +1832,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         // Improved GTAO shaders
         const uint32_t improved_gtao_crcs[] = {
             0x43A0000Bu,
+            0xDC56DC61u,
             0xDD16F0F8u,
         };
         for (uint32_t crc : improved_gtao_crcs) {
@@ -1808,9 +1851,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
         // UI visibility shaders
         const uint32_t ui_visibility_bypass_crcs[] = {
-            0xD98315D9u,
-            0x7B466CC5u,
-            0x483894D1u,
+            // Endfield 1.5 UI permutations, matched to the fixed Vulkan UI paths.
+            0xF3506A1Fu,
+            0x45D804E5u,
+            0xCC7DD71Au,
+            0xECB4AA48u,
+            0x5278B104u,
             0xB7010B10u,
             0xC954C30Bu,
             0xE4D1754Au,
@@ -1829,7 +1875,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
         // Ping/latency bar shader
         {
-          auto it = custom_shaders.find(0xF4EF16E9u);
+          auto it = custom_shaders.find(0xF1B0E28Au);
           if (it != custom_shaders.end()) {
             it->second.on_inject = OnLatencyBarInject;
           }
@@ -1840,7 +1886,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             it->second.on_draw = OnPingDraw;
           }
         }
-        // Register draw and draw_indexed events for heuristic ping/UID detection
+        // Track resources and command-list state used by VFX and UI classification.
         reshade::register_event<reshade::addon_event::init_command_list>(OnInitVfxCommandList);
         reshade::register_event<reshade::addon_event::reset_command_list>(OnResetVfxCommandList);
         reshade::register_event<reshade::addon_event::destroy_command_list>(OnDestroyVfxCommandList);
@@ -1849,8 +1895,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         reshade::register_event<reshade::addon_event::init_resource_view>(OnInitVfxResourceView);
         reshade::register_event<reshade::addon_event::destroy_resource_view>(OnDestroyVfxResourceView);
         reshade::register_event<reshade::addon_event::push_descriptors>(OnPushVfxDescriptors);
-        reshade::register_event<reshade::addon_event::draw>(OnDraw);
-        reshade::register_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
 
         initialized = true;
       }
@@ -1865,8 +1909,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       reshade::unregister_event<reshade::addon_event::init_resource_view>(OnInitVfxResourceView);
       reshade::unregister_event<reshade::addon_event::destroy_resource_view>(OnDestroyVfxResourceView);
       reshade::unregister_event<reshade::addon_event::push_descriptors>(OnPushVfxDescriptors);
-      reshade::unregister_event<reshade::addon_event::draw>(OnDraw);
-      reshade::unregister_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
       reshade::unregister_event<reshade::addon_event::present>(OnPresent);
       reshade::unregister_event<reshade::addon_event::reshade_begin_effects>(OnReshadeBeginEffects);
       reshade::unregister_event<reshade::addon_event::reshade_finish_effects>(OnReshadeFinishEffects);
@@ -1877,6 +1919,12 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
+    renodx::utils::command_action::Register(
+        OnUiCommand, {.command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+  } else if (fdw_reason == DLL_PROCESS_DETACH) {
+    renodx::utils::command_action::Unregister(OnUiCommand);
+  }
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
   renodx::utils::state::Use(fdw_reason);
 
