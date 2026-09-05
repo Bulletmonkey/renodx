@@ -56,3 +56,6 @@ __pycache__/
 .test/
 .venv-analysis/
 tmp/*
+
+# Local Endfield Enhancer build, release, and runtime evidence artifacts
+/artifacts/endfield-enhancer/

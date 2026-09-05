@@ -699,6 +699,26 @@ foreach(FILE ${ADDON_FILES})
   )
 endforeach()
 
+if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+  target_include_directories(endfield-enhancer SYSTEM PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/reshade/deps/glad/target/include)
+  add_library(endfield-enhancer-vulkan-loader SHARED
+    src/games/endfield-enhancer/vulkan_loader_forwarder.cpp)
+  target_compile_definitions(endfield-enhancer-vulkan-loader PRIVATE
+    NOMINMAX
+    WIN32_LEAN_AND_MEAN)
+  target_include_directories(endfield-enhancer-vulkan-loader SYSTEM PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/external/reshade/deps/glad/target/include)
+  set_target_properties(endfield-enhancer-vulkan-loader PROPERTIES
+    PREFIX ""
+    OUTPUT_NAME "vulkan-1"
+    SUFFIX ".dll")
+  add_custom_command(TARGET endfield-enhancer-vulkan-loader POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_CURRENT_SOURCE_DIR}/src/games/endfield-enhancer/ReShade64.json"
+      "$<TARGET_FILE_DIR:endfield-enhancer-vulkan-loader>/ReShade64.json")
+endif()
+
 set(CPACK_PROJECT_NAME ${PROJECT_NAME})
 set(CPACK_PROJECT_VERSION ${PROJECT_VERSION})
 
