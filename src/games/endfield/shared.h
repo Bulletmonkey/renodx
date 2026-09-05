@@ -62,6 +62,8 @@ struct ShaderInjectData {
   float ui_aspect_ratio;
   float improved_gtao;
   float fake_cloud_shadows;
+  float latency_bar_viewport_width;
+  float latency_bar_viewport_height;
 };
 
 #ifndef __cplusplus

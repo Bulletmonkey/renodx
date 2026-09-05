@@ -74,23 +74,31 @@ SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
     _3 = stage_input._3;
     _4 = stage_input._4;
     frag_main();
-    // RenoDX code start: hide the latency bar while it is rendered into the transition UI target.
-    float2 uv_pixel_size = fwidth(_4);
-    bool is_transition_latency_bar = stage_input.position.x >= 20.0f
-        && stage_input.position.x <= 60.0f
-        && stage_input.position.y >= 15.0f
-        && stage_input.position.y <= 50.0f
-        && uv_pixel_size.x >= 0.1f
-        && uv_pixel_size.y >= 0.05f;
-    if (PING_TEXT_OPACITY < 0.5f && is_transition_latency_bar)
-    {
-        _5 = 0.0f;
-    }
-    // RenoDX code end
-    // RenoDX code start: hide this UI pass when the UI visibility control is disabled.
+    // RenoDX code start: hide UI or the draw-scoped latency bar.
     if (UI_VISIBILITY < 0.5f)
     {
-        _5 = 0.0f;
+        discard;
+    }
+    // Restrict hiding to the matched shader pair and 18-index latency draw.
+    // Coordinates are relative to the bound viewport, not a fixed-resolution mask.
+    float2 viewport_size = float2(shader_injection.latency_bar_viewport_width,
+                                 shader_injection.latency_bar_viewport_height);
+    float2 uv_pixel_size = fwidth(_4);
+    if (LATENCY_BAR_DRAW_OPACITY < 0.5f && all(viewport_size > 0.0f))
+    {
+        float2 screen_uv = stage_input.position.xy / viewport_size;
+        bool is_hud_latency_bar = screen_uv.x >= 0.005f && screen_uv.x <= 0.035f
+            && screen_uv.y >= 0.95f && screen_uv.y <= 0.995f;
+        // Retain the existing transition-target footprint and UV-derivative test.
+        bool is_transition_latency_bar = stage_input.position.x >= 20.0f
+            && stage_input.position.x <= 60.0f
+            && stage_input.position.y >= 15.0f
+            && stage_input.position.y <= 50.0f
+            && uv_pixel_size.x >= 0.1f && uv_pixel_size.y >= 0.05f;
+        if (is_hud_latency_bar || is_transition_latency_bar)
+        {
+            discard;
+        }
     }
     // RenoDX code end
     SPIRV_Cross_Output stage_output;

@@ -27,6 +27,7 @@
 #include "../../mods/shader.hpp"
 #include "../../mods/swapchain.hpp"
 #include "../../utils/bitwise.hpp"
+#include "../../utils/command_action.hpp"
 #include "../../utils/data.hpp"
 #include "../../utils/hash.hpp"
 #include "../../utils/resource.hpp"
@@ -243,6 +244,7 @@ void InitializeCustomShaders() {
 }
 
 ShaderInjectData shader_injection;
+static_assert(sizeof(ShaderInjectData) == 62u * sizeof(float));
 
 // Keep the fullscreen output pass on a compact push-constant payload while
 // game shader injection uses RenoDX's official Vulkan push-constant path.
@@ -1156,6 +1158,18 @@ bool InjectLatencyBarDrawOpacity(reshade::api::command_list* cmd_list) {
   shader_injection.latency_bar_draw_opacity = is_latency_bar_draw_candidate
       ? shader_injection.ping_text_opacity
       : 1.f;
+  // Use the current UI target, including transition targets, rather than the swapchain size.
+  shader_injection.latency_bar_viewport_width = 0.f;
+  shader_injection.latency_bar_viewport_height = 0.f;
+  const auto* viewport_state = renodx::utils::state::GetCurrentState(cmd_list);
+  if (viewport_state != nullptr && !viewport_state->viewports.empty()) {
+    const auto& viewport = viewport_state->viewports.front();
+    if (viewport.x == 0.f && std::min(viewport.y, viewport.y + viewport.height) == 0.f
+        && viewport.width > 0.f && viewport.height != 0.f) {
+      shader_injection.latency_bar_viewport_width = viewport.width;
+      shader_injection.latency_bar_viewport_height = std::abs(viewport.height);
+    }
+  }
   return true;
 }
 
@@ -2255,6 +2269,26 @@ bool OnDrawIndexed(
   return true;
 }
 
+// Classify or consume UI draws before shader callbacks can inject or replay them.
+// Separate ReShade draw handlers can run after the cross-addon dispatcher.
+inline constexpr auto OnUiCommand = []<typename Arguments>(
+    renodx::utils::command_action::CommandContext<Arguments>& context)
+    -> renodx::utils::command_action::CallbackResult<
+        renodx::utils::command_action::CommandContext<Arguments>> {
+  if constexpr (std::is_same_v<Arguments, renodx::utils::command_action::DrawIndexedArguments>) {
+    return {.bypass = OnDrawIndexed(
+                context.cmd_list, context.arguments.index_count,
+                context.arguments.instance_count, context.arguments.first_index,
+                context.arguments.vertex_offset, context.arguments.first_instance)};
+  } else if constexpr (std::is_same_v<Arguments, renodx::utils::command_action::DrawArguments>) {
+    return {.bypass = OnDraw(
+                context.cmd_list, context.arguments.vertex_count,
+                context.arguments.instance_count, context.arguments.first_vertex,
+                context.arguments.first_instance)};
+  }
+  return {};
+};
+
 void OnInitSwapChainOutput(reshade::api::swapchain* swapchain, bool) {
   if (!renodx::mods::swapchain::IsUpgraded(swapchain)) return;
 
@@ -2375,6 +2409,12 @@ void UseRenoDXRuntime(DWORD fdw_reason) {
   }
   SyncSwapChainInjection();
   renodx::mods::swapchain::Use(fdw_reason, &swap_chain_injection);
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
+    renodx::utils::command_action::Register(
+        OnUiCommand, {.command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+  } else if (fdw_reason == DLL_PROCESS_DETACH) {
+    renodx::utils::command_action::Unregister(OnUiCommand);
+  }
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
   renodx::utils::state::Use(fdw_reason);
 }
@@ -2584,12 +2624,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         RegisterUidBypassShader(kVulkanUidPixelShaderHash);
 
         for (const auto& pair : kVulkanPingShaderPairs) {
-          auto vertex_it = custom_shaders.find(pair.vertex_shader_hash);
-          if (vertex_it != custom_shaders.end()
-              && pair.pixel_shader_hash != kVulkanSharedUidPingPixelShaderHash) {
-            vertex_it->second.on_inject = InjectLatencyBarDrawOpacity;
-          }
-
           auto pixel_it = custom_shaders.find(pair.pixel_shader_hash);
           const auto on_draw =
               pair.pixel_shader_hash == kVulkanSharedUidPingPixelShaderHash
@@ -2603,9 +2637,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           } else {
             pixel_it->second.on_draw = on_draw;
           }
+          if (pair.pixel_shader_hash == kVulkanLatencyBarShaderPair.pixel_shader_hash) {
+            custom_shaders.at(pair.pixel_shader_hash).on_inject = InjectLatencyBarDrawOpacity;
+          }
         }
-        reshade::register_event<reshade::addon_event::draw>(OnDraw);
-        reshade::register_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
 
         initialized = true;
       }
@@ -2616,8 +2651,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     case DLL_PROCESS_DETACH:
       reshade::unregister_event<reshade::addon_event::create_device>(OnCreateVulkanDevice);
       reshade::unregister_event<reshade::addon_event::init_swapchain>(OnInitSwapChainOutput);
-      reshade::unregister_event<reshade::addon_event::draw>(OnDraw);
-      reshade::unregister_event<reshade::addon_event::draw_indexed>(OnDrawIndexed);
       reshade::unregister_event<reshade::addon_event::reset_command_list>(
           ClearVfxCommandListDescriptors);
       reshade::unregister_event<reshade::addon_event::destroy_command_list>(
