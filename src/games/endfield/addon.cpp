@@ -35,6 +35,7 @@
 #include "../../utils/state.hpp"
 #include "../../utils/swapchain.hpp"
 #include "./shared.h"
+#include "./renderer_guard.hpp"
 
 namespace {
 
@@ -105,6 +106,7 @@ void OnBindVfxDescriptorTables(
     uint32_t first,
     uint32_t count,
     const reshade::api::descriptor_table* tables) {
+  if (!endfield::renderer::IsSupported(cmd_list->get_device())) return;
   if (stages != reshade::api::shader_stage::all_graphics
       || first > 1u
       || first + count <= 1u) {
@@ -123,6 +125,7 @@ void OnPushVfxDescriptors(
     reshade::api::pipeline_layout,
     uint32_t set,
     const reshade::api::descriptor_table_update& update) {
+  if (!endfield::renderer::IsSupported(cmd_list->get_device())) return;
   if (stages != reshade::api::shader_stage::all_graphics
       || set != 1u
       || !IsTrackedVfxTextureBinding(update.binding)
@@ -154,9 +157,10 @@ void OnPushVfxDescriptors(
 
 // Cache bindings while disabled because Vulkan cannot query them later.
 bool OnUpdateVfxDescriptorTables(
-    reshade::api::device*,
+    reshade::api::device* device,
     uint32_t count,
     const reshade::api::descriptor_table_update* updates) {
+  if (!endfield::renderer::IsSupported(device)) return false;
   std::unique_lock lock(vulkan_descriptor_mutex, std::defer_lock);
   for (uint32_t i = 0u; i < count; ++i) {
     const auto& update = updates[i];
@@ -189,9 +193,10 @@ bool OnUpdateVfxDescriptorTables(
 }
 
 bool OnCopyVfxDescriptorTables(
-    reshade::api::device*,
+    reshade::api::device* device,
     uint32_t count,
     const reshade::api::descriptor_table_copy* copies) {
+  if (!endfield::renderer::IsSupported(device)) return false;
   std::unique_lock lock(vulkan_descriptor_mutex, std::defer_lock);
   for (uint32_t i = 0u; i < count; ++i) {
     const auto& copy = copies[i];
@@ -385,6 +390,7 @@ std::unordered_map<reshade::api::effect_runtime*, ResolutionUniformCache>
 
 void InvalidateReshadeResolutionUniformCache(
     reshade::api::effect_runtime* runtime) {
+  if (!endfield::renderer::IsSupported(runtime->get_device())) return;
   const std::lock_guard lock(resolution_uniform_cache_mutex);
   resolution_uniform_caches.erase(runtime);
 }
@@ -482,6 +488,7 @@ void OnReshadeBeginEffects(reshade::api::effect_runtime* runtime,
                            reshade::api::command_list* cmd_list,
                            reshade::api::resource_view rtv,
                            reshade::api::resource_view rtv_srgb) {
+  if (!endfield::renderer::IsSupported(runtime->get_device())) return;
   if (current_render_reshade_before_ui != 0.f && !bypass_render_active) {
     runtime->set_effects_state(false);
   }
@@ -491,6 +498,7 @@ void OnReshadeFinishEffects(reshade::api::effect_runtime* runtime,
                             reshade::api::command_list* cmd_list,
                             reshade::api::resource_view rtv,
                             reshade::api::resource_view rtv_srgb) {
+  if (!endfield::renderer::IsSupported(runtime->get_device())) return;
   if (current_render_reshade_before_ui != 0.f && !bypass_render_active) {
     runtime->set_effects_state(true);
   }
@@ -608,6 +616,7 @@ void SetVfxBoostTrackingEnabled(bool enabled) {
 }
 
 void ClearVfxCommandListDescriptors(reshade::api::command_list* cmd_list) {
+  if (!endfield::renderer::IsSupported(cmd_list->get_device())) return;
   const uint64_t command_buffer = GetCommandListKey(cmd_list);
   const std::lock_guard lock(vulkan_descriptor_mutex);
   vulkan_graphics_descriptor_set_1.erase(command_buffer);
@@ -615,6 +624,7 @@ void ClearVfxCommandListDescriptors(reshade::api::command_list* cmd_list) {
 }
 
 void ClearUiDrawDetectionState(reshade::api::command_list* cmd_list) {
+  if (!endfield::renderer::IsSupported(cmd_list->get_device())) return;
   const std::lock_guard lock(ui_draw_detection_mutex);
   ui_draw_detection_states.erase(GetCommandListKey(cmd_list));
 }
@@ -753,8 +763,9 @@ bool TryCacheVfxTextureCrc(
 }
 
 void OnDestroyVfxResourceView(
-    reshade::api::device*,
+    reshade::api::device* device,
     reshade::api::resource_view view) {
+  if (!endfield::renderer::IsSupported(device)) return;
   if (!vfx_discovery_cache_active.load(std::memory_order_relaxed)
       && !vfx_readback_work_pending.load(std::memory_order_relaxed)) {
     return;
@@ -778,8 +789,9 @@ void OnDestroyVfxResourceView(
 }
 
 void OnDestroyVfxResource(
-    reshade::api::device*,
+    reshade::api::device* device,
     reshade::api::resource resource) {
+  if (!endfield::renderer::IsSupported(device)) return;
   if (!vfx_discovery_cache_active.load(std::memory_order_relaxed)
       && !vfx_readback_work_pending.load(std::memory_order_relaxed)) {
     return;
@@ -1030,6 +1042,7 @@ void ProcessPendingVfxTextureReadback(reshade::api::command_queue* queue) {
 }
 
 void OnDestroyVfxDevice(reshade::api::device* device) {
+  if (!endfield::renderer::IsSupported(device)) return;
   reshade::api::resource intermediate = {0u};
   reshade::api::fence fence = {0u};
   {
@@ -2301,6 +2314,7 @@ inline constexpr auto OnUiCommand = []<typename Arguments>(
     renodx::utils::command_action::CommandContext<Arguments>& context)
     -> renodx::utils::command_action::CallbackResult<
         renodx::utils::command_action::CommandContext<Arguments>> {
+  if (!endfield::renderer::IsSupported(context.cmd_list->get_device())) return {};
   if constexpr (std::is_same_v<Arguments, renodx::utils::command_action::DrawIndexedArguments>) {
     return {.bypass = OnDrawIndexed(
                 context.cmd_list, context.arguments.index_count,
@@ -2316,6 +2330,7 @@ inline constexpr auto OnUiCommand = []<typename Arguments>(
 };
 
 void OnInitSwapChainOutput(reshade::api::swapchain* swapchain, bool) {
+  if (!endfield::renderer::IsSupported(swapchain->get_device())) return;
   if (!renodx::mods::swapchain::IsUpgraded(swapchain)) return;
 
   swap_chain_output_initialized = false;
@@ -2329,6 +2344,7 @@ void OnPresent(reshade::api::command_queue* queue,
                const reshade::api::rect* dest_rect,
                uint32_t dirty_rect_count,
                const reshade::api::rect* dirty_rects) {
+  if (!endfield::renderer::IsSupported(queue->get_device())) return;
   static uint32_t random_state = 0x9E3779B9u;
   random_state = random_state * 1664525u + 1013904223u;
   shader_injection.custom_random = static_cast<float>(random_state >> 8u) / 16777216.f;
@@ -2430,6 +2446,7 @@ bool renodx_runtime_attached = false;
 
 void UseRenoDXRuntime(DWORD fdw_reason) {
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
+  endfield::renderer::UseOverlay(fdw_reason);
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     SetVfxBoostTrackingEnabled(IsVisible(shader_injection.perchannelblowout));
   }
@@ -2443,6 +2460,7 @@ void UseRenoDXRuntime(DWORD fdw_reason) {
   }
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
   renodx::utils::state::Use(fdw_reason);
+  endfield::renderer::UseRuntimeEvents(fdw_reason);
 }
 
 bool OnCreateVulkanDevice(reshade::api::device_api api, uint32_t& api_version) {
@@ -2680,6 +2698,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           }
         }
 
+        endfield::renderer::Configure(&custom_shaders);
         initialized = true;
       }
 
