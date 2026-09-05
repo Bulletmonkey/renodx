@@ -2219,10 +2219,6 @@ bool OnDrawIndexed(
       }
       state.draw_call_vertex_count = 0;
     }
-    if (is_latency_bar_draw_candidate
-        && !IsVisible(shader_injection.ping_text_opacity)) {
-      return true;
-    }
     return false;
   }
 
@@ -2537,6 +2533,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         }
 
         const uint32_t improved_gtao_crcs[] = {
+            0x02D76FA7u,  // GTAO main (Endfield 1.5 depth-reconstructed normal permutation)
             0x902C57D5u,  // GTAO main
             0xAC758574u,  // GTAO temporal
         };
