@@ -10,6 +10,7 @@
 namespace endfield::renderer {
 
 inline constexpr auto kSupportedApi = reshade::api::device_api::d3d11;
+inline unsigned int supported_runtime_count = 0;
 
 inline bool IsSupported(reshade::api::device* device) {
   return device->get_api() == kSupportedApi;
@@ -21,10 +22,21 @@ inline void OnOverlay(reshade::api::effect_runtime* runtime) {
 }
 
 inline void OnInitEffectRuntime(reshade::api::effect_runtime* runtime) {
+  // ReShade creates the window before calling OnOverlay, so defer registration.
+  if (IsSupported(runtime->get_device()) && supported_runtime_count++ == 0) {
+    reshade::register_overlay(renodx::utils::settings::overlay_title.c_str(), OnOverlay);
+  }
   reshade::log::message(reshade::log::level::info,
                        IsSupported(runtime->get_device())
                            ? "Endfield addon active for this renderer."
                            : "Endfield addon inactive: this runtime uses a different graphics API.");
+}
+
+inline void OnDestroyEffectRuntime(reshade::api::effect_runtime* runtime) {
+  if (IsSupported(runtime->get_device()) && supported_runtime_count != 0
+      && --supported_runtime_count == 0) {
+    reshade::unregister_overlay(renodx::utils::settings::overlay_title.c_str(), OnOverlay);
+  }
 }
 
 inline void Configure(renodx::mods::shader::CustomShaders* shaders) {
@@ -123,11 +135,13 @@ inline void UseOverlay(DWORD reason) {
   if (reason == DLL_PROCESS_ATTACH) {
     reshade::unregister_overlay(renodx::utils::settings::overlay_title.c_str(),
                                renodx::utils::settings::OnRegisterOverlay);
-    reshade::register_overlay(renodx::utils::settings::overlay_title.c_str(), OnOverlay);
     reshade::register_event<reshade::addon_event::init_effect_runtime>(OnInitEffectRuntime);
+    reshade::register_event<reshade::addon_event::destroy_effect_runtime>(OnDestroyEffectRuntime);
   } else if (reason == DLL_PROCESS_DETACH) {
     reshade::unregister_overlay(renodx::utils::settings::overlay_title.c_str(), OnOverlay);
     reshade::unregister_event<reshade::addon_event::init_effect_runtime>(OnInitEffectRuntime);
+    reshade::unregister_event<reshade::addon_event::destroy_effect_runtime>(OnDestroyEffectRuntime);
+    supported_runtime_count = 0;
   }
 }
 
