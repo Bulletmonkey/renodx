@@ -2,7 +2,7 @@
   "$schema": "https://cdn.jsdelivr.net/gh/clshortfuse/renodx/renodx-metadata-schema.json",
   "id": "endfield-enhancer",
   "title": "Arknights: Endfield Enhancer",
-  "summary": "FPS controls, full-resolution GTAO, and LOD improvements for Arknights: Endfield.",
+  "summary": "FPS controls plus SSR, DoF, GTAO, LOD, and HDR frame-generation improvements for Arknights: Endfield.",
   "status": "experimental",
   "deploy": {
     "game_exe": "Endfield.exe",

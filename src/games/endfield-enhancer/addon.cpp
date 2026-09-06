@@ -12,6 +12,7 @@
 #include "./enhancer.hpp"
 #include "./lod.hpp"
 #include "./ssr_resolve.hpp"
+#include "./runtime_status.hpp"
 #include "./vulkan_loader_api.hpp"
 
 namespace {
@@ -23,6 +24,7 @@ std::atomic_uint32_t limiter_resume_delay = kLimiterResumeDelayFrames;
 bool hdr_requested_at_startup = false;
 bool hdr_available = false;
 bool frame_generation_available = false;
+reshade::api::device* overlay_device = nullptr;
 
 const char* GetHDRUnavailableReason(reshade::api::device_api api) {
   if (api == reshade::api::device_api::d3d11) {
@@ -171,8 +173,8 @@ renodx::utils::settings::Settings settings = {
         .default_value = 0.f,
         .can_reset = false,
         .label = "GTAO Resolution",
-        .section = "Visual Improvements",
-        .tooltip = "Resolution of ambient occlusion buffers. Double resolution doubles both dimensions over full resolution, using four times as many pixels. May substantially reduce performance.",
+        .section = "Ambient Occlusion",
+        .tooltip = "Controls the resolution of ambient occlusion.",
         .labels = {"Half Resolution (Vanilla)", "Full Resolution", "Double Resolution"},
         .tint = kVisualTint,
     },
@@ -220,7 +222,7 @@ renodx::utils::settings::Settings settings = {
         .default_value = 0.f,
         .label = "DoF Resolution",
         .section = "Depth of Field",
-        .tooltip = "Resolution of depth-of-field buffers, including native cutscene DoF when Force DoF is off. Half keeps the game's resolution policy. Full and Double override it; Double uses four times the pixels of Full.",
+        .tooltip = "Controls the resolution of depth of field.",
         .labels = {"Half Resolution (Vanilla)", "Full Resolution", "Double Resolution"},
         .tint = kVisualTint,
     },
@@ -231,7 +233,7 @@ renodx::utils::settings::Settings settings = {
         .default_value = 0.f,
         .label = "Force DoF",
         .section = "Depth of Field",
-        .tooltip = "Forces High Quality Near + Far depth of field with manual focus and blur controls. Off restores the game's camera settings.",
+        .tooltip = "Enables high-quality depth of field with manual controls.",
         .labels = {"Off", "On"},
         .tint = kVisualTint,
     },
@@ -242,7 +244,7 @@ renodx::utils::settings::Settings settings = {
         .default_value = 10.f,
         .label = "Focus Distance",
         .section = "Depth of Field",
-        .tooltip = "Distance from the camera to the sharp focus region, in game world units. Foreground and background blur ranges move with it.",
+        .tooltip = "Controls the distance from the camera that remains in focus.",
         .tint = kVisualTint,
         .min = 0.5f,
         .max = 200.f,
@@ -256,7 +258,7 @@ renodx::utils::settings::Settings settings = {
         .default_value = 3.f,
         .label = "Near Blur Strength",
         .section = "Depth of Field",
-        .tooltip = "Maximum foreground blur radius. 0 disables foreground blur.",
+        .tooltip = "Controls foreground blur strength.",
         .tint = kVisualTint,
         .min = 0.f,
         .max = 10.f,
@@ -270,7 +272,7 @@ renodx::utils::settings::Settings settings = {
         .default_value = 5.f,
         .label = "Far Blur Strength",
         .section = "Depth of Field",
-        .tooltip = "Maximum background blur radius. 0 disables background blur.",
+        .tooltip = "Controls background blur strength.",
         .tint = kVisualTint,
         .min = 0.f,
         .max = 10.f,
@@ -284,7 +286,7 @@ renodx::utils::settings::Settings settings = {
         .default_value = 0.f,
         .can_reset = false,
         .label = "DLSS-G HDR Patch",
-        .section = "Visual Improvements",
+        .section = "DLSS-G HDR Patch",
         .tooltip = "Enables HDR with DLSS Frame Generation. Requires the base Endfield RenoDX addon and bundled vulkan-1.dll. Restart required.",
         .labels = {"Off", "On"},
         .tint = kVisualTint,
@@ -293,9 +295,17 @@ renodx::utils::settings::Settings settings = {
     hdr_warning_setting = new renodx::utils::settings::Setting{
         .key = "HDRFrameGenerationWarning",
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
-        .section = "Visual Improvements",
+        .section = "DLSS-G HDR Patch",
         .tint = 0xE6AD45,
         .is_visible = [] { return !hdr_available; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+        .section = "DLSS-G HDR Patch",
+        .on_draw = [] {
+          endfield::runtime_status::Draw(overlay_device);
+          return false;
+        },
     },
     new renodx::utils::settings::Setting{
         .key = "ForceHighestGeometryLOD",
@@ -304,7 +314,7 @@ renodx::utils::settings::Settings settings = {
         .default_value = 0.f,
         .can_reset = false,
         .label = "Geometry LOD Override",
-        .section = "Visual Improvements",
+        .section = "Geometry",
         .tooltip = "Keeps geometry at its highest detail level. Can significantly increase VRAM usage and reduce performance.",
         .labels = {"Off", "On"},
         .tint = kVisualTint,
@@ -327,6 +337,7 @@ renodx::utils::settings::Settings settings = {
 };
 
 void OnOverlay(reshade::api::effect_runtime* runtime) {
+  overlay_device = runtime->get_device();
   // Use this runtime's renderer, not DLL presence or a temporary probe device.
   frame_generation_available = runtime->get_device()->get_api() == reshade::api::device_api::vulkan;
   const char* reason = GetHDRUnavailableReason(runtime->get_device()->get_api());
@@ -336,6 +347,7 @@ void OnOverlay(reshade::api::effect_runtime* runtime) {
   ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase);
   renodx::utils::settings::OnRegisterOverlay(runtime);
   ImGui::PopFont();
+  overlay_device = nullptr;
 }
 
 void OnPresent(
@@ -383,7 +395,7 @@ extern "C" __declspec(dllexport) const char* const NAME =
 extern "C" __declspec(dllexport) const char* const AUTHOR =
     "ItsTheSewerRat";
 extern "C" __declspec(dllexport) const char* const DESCRIPTION =
-    "FPS, SSR, GTAO, LOD, and HDR frame-generation improvements for Arknights: Endfield";
+    "FPS, SSR, DoF, GTAO, LOD, and HDR frame-generation improvements for Arknights: Endfield";
 
 BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
   if (reason == DLL_THREAD_ATTACH || reason == DLL_THREAD_DETACH) return TRUE;

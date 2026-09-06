@@ -56,3 +56,6 @@ __pycache__/
 .test/
 .venv-analysis/
 tmp/*
+
+# Local workspace tools (not addon sources)
+/tools/
