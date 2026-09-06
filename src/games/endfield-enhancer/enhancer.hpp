@@ -16,6 +16,7 @@
 #include <include/reshade.hpp>
 
 #include "./hdr_output.hpp"
+#include "./render_quality.hpp"
 
 namespace endfield::enhancer {
 
@@ -23,7 +24,12 @@ inline float fps_unlock = 0.f;
 inline float fps_limit = 120.f;
 inline float frame_generation_fps_limit = 240.f;
 inline float background_fps_limit = 60.f;
-inline float full_resolution_gtao = 0.f;
+inline float gtao_resolution = 0.f;
+inline float dof_resolution = 0.f;
+inline float force_dof = 0.f;
+inline float dof_focus_distance = 10.f;
+inline float dof_near_blur = 3.f;
+inline float dof_far_blur = 5.f;
 inline float hdr_frame_generation = 0.f;
 
 namespace detail {
@@ -53,6 +59,8 @@ using FieldGetOffset = size_t (*)(void*);
 using RuntimeInvoke = void* (*)(Il2CppMethod, void*, void**, void**);
 using ObjectUnbox = void* (*)(void*);
 using RenderPath = void (*)(int64_t, void*, void*, void*, void*, void*);
+using ResolveICall = void* (*)(const char*);
+using ObjectWithInstanceIDExists = bool (*)(int32_t);
 
 inline DomainGet domain_get = nullptr;
 inline ThreadAttach thread_attach = nullptr;
@@ -81,8 +89,31 @@ inline size_t gtao_width_offset = 0;
 inline size_t gtao_height_offset = 0;
 inline size_t render_params_frame_generation_pause_offset = 0;
 
+inline size_t before_culling_settings_offset = 0;
+inline size_t dof_quality_offset = 0;
+inline size_t dof_scale_adjust_offset = 0;
+inline size_t render_params_dof_offset = 0;
+inline size_t dof_scale_offset = 0;
+inline bool dof_quality_ready = false;
+inline bool dof_resolution_ready = false;
+inline bool dof_force_ready = false;
+struct DoFManualOffsets {
+  size_t enable, camera, physical, focus, aperture;
+  size_t near_start, near_end, near_radius;
+  size_t far_start, far_end, far_radius, temporal, max_radius, debug;
+};
+inline DoFManualOffsets dof_manual = {};
+inline size_t native_camera_instance_id_offset = 0;
+inline ObjectWithInstanceIDExists object_with_instance_id_exists = nullptr;
+inline std::atomic<float> dof_resolution_override = 0.f;
+inline std::atomic_bool dof_force_override = false;
+inline std::atomic<float> dof_focus_override = 10.f;
+inline std::atomic<float> dof_near_override = 3.f;
+inline std::atomic<float> dof_far_override = 5.f;
+inline std::atomic_bool quality_access_failed = false;
+
 inline std::atomic_bool shutting_down = false;
-inline std::atomic_bool gtao_writes_enabled = false;
+inline std::atomic_uint32_t gtao_resolution_multiplier = 1;
 
 inline bool api_ready = false;
 inline bool fps_ready = false;
@@ -476,6 +507,7 @@ inline void HookedRenderPath(
     void* camera,
     void* render_context,
     void* command) {
+  RenderQualityOverrides quality;
   if (!shutting_down.load(std::memory_order_relaxed)
       && render_path_params != nullptr) {
     __try {
@@ -491,9 +523,9 @@ inline void HookedRenderPath(
         auto* settings = static_cast<uint8_t*>(gtao);
         auto* width = reinterpret_cast<int32_t*>(settings + gtao_width_offset);
         auto* height = reinterpret_cast<int32_t*>(settings + gtao_height_offset);
-        const bool enabled = gtao_writes_enabled.load(std::memory_order_relaxed);
+        const uint32_t multiplier = gtao_resolution_multiplier.load(std::memory_order_relaxed);
 
-        if (enabled) {
+        if (multiplier == 2 || multiplier == 4) {
           if (!gtao_dimensions.modified
               || gtao_dimensions.settings != gtao
               || *width != gtao_dimensions.written_width
@@ -504,11 +536,11 @@ inline void HookedRenderPath(
           }
 
           if (gtao_dimensions.source_width > 0
-              && gtao_dimensions.source_width <= 16384
+              && gtao_dimensions.source_width <= 16384 / static_cast<int32_t>(multiplier)
               && gtao_dimensions.source_height > 0
-              && gtao_dimensions.source_height <= 16384) {
-            gtao_dimensions.written_width = gtao_dimensions.source_width * 2;
-            gtao_dimensions.written_height = gtao_dimensions.source_height * 2;
+              && gtao_dimensions.source_height <= 16384 / static_cast<int32_t>(multiplier)) {
+            gtao_dimensions.written_width = gtao_dimensions.source_width * multiplier;
+            gtao_dimensions.written_height = gtao_dimensions.source_height * multiplier;
             *width = gtao_dimensions.written_width;
             *height = gtao_dimensions.written_height;
             gtao_dimensions.modified = true;
@@ -518,13 +550,19 @@ inline void HookedRenderPath(
               std::snprintf(
                   message,
                   sizeof(message),
-                  "Endfield enhancer: GTAO 2x applied (%dx%d -> %dx%d).",
+                  "Endfield enhancer: GTAO resolution override (%dx%d -> %dx%d).",
                   gtao_dimensions.source_width,
                   gtao_dimensions.source_height,
                   gtao_dimensions.written_width,
                   gtao_dimensions.written_height);
               Log(reshade::log::level::info, message);
             }
+          } else if (gtao_dimensions.modified) {
+            if (*width == gtao_dimensions.written_width && *height == gtao_dimensions.written_height) {
+              *width = gtao_dimensions.source_width;
+              *height = gtao_dimensions.source_height;
+            }
+            gtao_dimensions = {};
           }
         } else {
           if (gtao_dimensions.modified
@@ -539,20 +577,85 @@ inline void HookedRenderPath(
       }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
       frame_generation_paused.store(true, std::memory_order_relaxed);
-      gtao_writes_enabled.store(false, std::memory_order_relaxed);
+      gtao_resolution_multiplier.store(1, std::memory_order_relaxed);
       Log(
           reshade::log::level::error,
           "Endfield enhancer: render-path metadata access failed; dependent features disabled.");
     }
   }
 
-  render_path(
-      pointer,
-      render_path_params,
-      before_culling_params,
-      camera,
-      render_context,
-      command);
+  __try {
+    if (!shutting_down.load(std::memory_order_relaxed)
+        && !quality_access_failed.load(std::memory_order_relaxed)
+        && render_path_params != nullptr && before_culling_params != nullptr) {
+      __try {
+        // The native render entry copies settingParameters from pre-culling.
+        // Use that same block, not the possibly stale render-params pointer.
+        const float dof_scale = dof_resolution_override.load(std::memory_order_relaxed);
+        const bool manual_dof = dof_force_override.load(std::memory_order_relaxed);
+        if ((dof_resolution_ready && dof_scale != 0.f)
+            || (dof_force_ready && manual_dof)) {
+          void* native_settings = *reinterpret_cast<void**>(
+              static_cast<uint8_t*>(before_culling_params) + before_culling_settings_offset);
+          if (native_settings != nullptr) {
+            void* dof = *reinterpret_cast<void**>(
+                static_cast<uint8_t*>(render_path_params) + render_params_dof_offset);
+            if (dof != nullptr) {
+              if (dof_resolution_ready && dof_scale != 0.f) {
+                quality.Set<uint8_t>(native_settings, dof_scale_adjust_offset, 0);
+                quality.Set<float>(dof, dof_scale_offset, dof_scale);
+              }
+              // Inactive DoF data can contain a stale, nonzero camera ID. Use the
+              // live native camera supplied to HGRenderPath_Render instead.
+              if (dof_force_ready && manual_dof && camera != nullptr
+                  && object_with_instance_id_exists != nullptr) {
+                const int32_t camera_id = *reinterpret_cast<const int32_t*>(
+                    static_cast<const uint8_t*>(camera) + native_camera_instance_id_offset);
+                if (camera_id != 0 && object_with_instance_id_exists(camera_id)) {
+                  // HGDepthOfFieldQuality::HighFarNear. No method override when
+                  // Force DoF is off, including native cutscene cameras.
+                  quality.Set<int32_t>(native_settings, dof_quality_offset, 0);
+                  quality.Set<int32_t>(dof, dof_manual.camera, camera_id);
+                  const float focus = dof_focus_override.load(std::memory_order_relaxed);
+                  // Manual focus keeps a sharp band around the selected distance.
+                  // Positive, separated ranges also avoid zero-width CoC ramps.
+                  quality.Set<uint8_t>(dof, dof_manual.physical, 0);
+                  quality.Set<float>(dof, dof_manual.focus, focus);
+                  quality.Set<float>(dof, dof_manual.aperture, 16.f);
+                  quality.Set<float>(dof, dof_manual.near_start, focus * 0.25f);
+                  quality.Set<float>(dof, dof_manual.near_end, focus * 0.75f);
+                  quality.Set<float>(dof, dof_manual.near_radius, dof_near_override.load(std::memory_order_relaxed));
+                  quality.Set<float>(dof, dof_manual.far_start, focus * 1.25f);
+                  quality.Set<float>(dof, dof_manual.far_end, focus * 2.f);
+                  quality.Set<float>(dof, dof_manual.far_radius, dof_far_override.load(std::memory_order_relaxed));
+                  quality.Set<float>(dof, dof_manual.temporal, 0.5f);
+                  quality.Set<float>(native_settings, dof_manual.max_radius, 10.f);
+                  // Inactive parameters come from an uncleared frame arena.
+                  // Do not inherit a debug flag or even a valid-looking scale.
+                  quality.Set<uint8_t>(dof, dof_manual.debug, 0);
+                  if (!(dof_resolution_ready && dof_scale != 0.f)) quality.Set<float>(dof, dof_scale_offset, 0.5f);
+                  // Enable only after the complete manual parameter set is ready.
+                  quality.Set<uint8_t>(dof, dof_manual.enable,
+                      dof_near_override.load(std::memory_order_relaxed) > 0.f
+                          || dof_far_override.load(std::memory_order_relaxed) > 0.f);
+                }
+              }
+            }
+          }
+        }
+      } __except (EXCEPTION_EXECUTE_HANDLER) {
+        quality.Restore();
+        quality_access_failed.store(true, std::memory_order_relaxed);
+        Log(reshade::log::level::error, "Endfield enhancer: DoF parameter access failed; quality overrides disabled until restart.");
+      }
+    }
+    render_path(pointer, render_path_params, before_culling_params, camera, render_context, command);
+  } __finally {
+    if (!quality.Restore()) {
+      quality_access_failed.store(true, std::memory_order_relaxed);
+      Log(reshade::log::level::error, "Endfield enhancer: DoF parameter restoration failed; quality overrides disabled until restart.");
+    }
+  }
 }
 
 inline bool InstallRenderPathHook() {
@@ -597,6 +700,51 @@ inline bool InstallRenderPathHook() {
       static_cast<MethodInfo*>(method)->method_pointer);
   if (render_path == nullptr) return false;
 
+  Il2CppClass before_culling = FindGraphicsClass(graphics_image, "HGRenderPathBeforeCullingParamsCPP");
+  Il2CppClass quality_settings = FindGraphicsClass(graphics_image, "HGSettingParametersCpp");
+  Il2CppClass dof_settings = FindGraphicsClass(graphics_image, "HGDepthOfFieldParameters");
+  if (before_culling != nullptr && quality_settings != nullptr
+      && ResolveCppFieldOffset(before_culling, "settingParameters", nullptr, &before_culling_settings_offset)) {
+    dof_quality_ready = ResolveCppFieldOffset(quality_settings, "depthOfFieldQuality", nullptr, &dof_quality_offset);
+    const bool dof_parameters_ready = dof_settings != nullptr
+        && ResolveCppFieldOffset(render_params, "dofParameters", nullptr, &render_params_dof_offset)
+        && ResolveCppFieldOffset(dof_settings, "scale", nullptr, &dof_scale_offset);
+    dof_resolution_ready = dof_parameters_ready
+        && ResolveCppFieldOffset(quality_settings, "depthOfFieldScaleAdjust", nullptr, &dof_scale_adjust_offset);
+    dof_force_ready = dof_parameters_ready && dof_quality_ready
+        && ResolveCppFieldOffset(dof_settings, "enable", nullptr, &dof_manual.enable)
+        && ResolveCppFieldOffset(dof_settings, "debug", nullptr, &dof_manual.debug)
+        && ResolveCppFieldOffset(dof_settings, "camera", nullptr, &dof_manual.camera)
+        && ResolveCppFieldOffset(dof_settings, "usePhysicalCamera", nullptr, &dof_manual.physical)
+        && ResolveCppFieldOffset(dof_settings, "focusDistance", nullptr, &dof_manual.focus)
+        && ResolveCppFieldOffset(dof_settings, "aperture", nullptr, &dof_manual.aperture)
+        && ResolveCppFieldOffset(dof_settings, "nearFocusStart", nullptr, &dof_manual.near_start)
+        && ResolveCppFieldOffset(dof_settings, "nearFocusEnd", nullptr, &dof_manual.near_end)
+        && ResolveCppFieldOffset(dof_settings, "nearRadius", nullptr, &dof_manual.near_radius)
+        && ResolveCppFieldOffset(dof_settings, "farFocusStart", nullptr, &dof_manual.far_start)
+        && ResolveCppFieldOffset(dof_settings, "farFocusEnd", nullptr, &dof_manual.far_end)
+        && ResolveCppFieldOffset(dof_settings, "farRadius", nullptr, &dof_manual.far_radius)
+        && ResolveCppFieldOffset(dof_settings, "temporalFactor", nullptr, &dof_manual.temporal)
+        && ResolveCppFieldOffset(quality_settings, "depthOfFieldMaxRadius", nullptr, &dof_manual.max_radius);
+    if (dof_force_ready) {
+      ResolveICall resolve_icall = nullptr;
+      dof_force_ready = ResolveExport(GetModuleHandleW(L"GameAssembly.dll"), "il2cpp_resolve_icall", &resolve_icall);
+      if (dof_force_ready) {
+        auto get_instance_id_offset = reinterpret_cast<int32_t (*)()>(
+            resolve_icall("UnityEngine.Object::GetOffsetOfInstanceIDInCPlusPlusObject()"));
+        object_with_instance_id_exists = reinterpret_cast<ObjectWithInstanceIDExists>(
+            resolve_icall("UnityEngine.Object::DoesObjectWithInstanceIDExist(System.Int32)"));
+        const int32_t offset = get_instance_id_offset == nullptr ? -1 : get_instance_id_offset();
+        dof_force_ready = offset >= static_cast<int32_t>(sizeof(void*)) && offset < 0x100
+            && offset % alignof(int32_t) == 0 && object_with_instance_id_exists != nullptr;
+        if (dof_force_ready) native_camera_instance_id_offset = static_cast<size_t>(offset);
+      }
+      if (!dof_force_ready) {
+        Log(reshade::log::level::warning, "Endfield enhancer: Force DoF unavailable; native camera validation could not be resolved.");
+      }
+    }
+  }
+
   if (DetourTransactionBegin() != NO_ERROR) return false;
   if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
       || DetourAttach(&render_path, HookedRenderPath) != NO_ERROR) {
@@ -611,6 +759,10 @@ inline bool InstallRenderPathHook() {
 
   render_path_hook_installed = true;
   gtao_ready = true;
+  Log(reshade::log::level::info,
+      dof_quality_ready && dof_resolution_ready && dof_force_ready
+          ? "Endfield enhancer: DoF quality controls resolved from IL2CPP metadata."
+          : "Endfield enhancer: some DoF quality fields are unavailable; their overrides will be skipped.");
   char message[224] = {};
   std::snprintf(
       message,
@@ -691,21 +843,27 @@ inline void OnPresent(reshade::api::device* device) {
     TryInstallStreamlineHook(device);
   }
 
-  const bool gtao_enabled = full_resolution_gtao >= 0.5f;
+  const bool gtao_enabled = gtao_resolution == 1.f || gtao_resolution == 2.f;
   const bool render_path_hook_requested =
-      gtao_enabled || frame_generation_detection_requested;
+      gtao_enabled || frame_generation_detection_requested
+      || dof_resolution == 1.f || dof_resolution == 2.f || force_dof >= 0.5f;
   if (render_path_hook_requested && !render_path_hook_installed
       && (present_count == 1 || present_count % 120 == 0)) {
     InstallRenderPathHook();
   }
-  gtao_writes_enabled.store(
-      gtao_enabled && gtao_ready, std::memory_order_relaxed);
+  gtao_resolution_multiplier.store(
+      gtao_ready && gtao_enabled ? (gtao_resolution == 2.f ? 4u : 2u) : 1u, std::memory_order_relaxed);
+  dof_resolution_override.store(dof_resolution == 1.f || dof_resolution == 2.f ? dof_resolution : 0.f, std::memory_order_relaxed);
+  dof_focus_override.store(dof_focus_distance >= 0.5f && dof_focus_distance <= 200.f ? dof_focus_distance : 10.f, std::memory_order_relaxed);
+  dof_near_override.store(dof_near_blur >= 0.f && dof_near_blur <= 10.f ? dof_near_blur : 3.f, std::memory_order_relaxed);
+  dof_far_override.store(dof_far_blur >= 0.f && dof_far_blur <= 10.f ? dof_far_blur : 5.f, std::memory_order_relaxed);
+  dof_force_override.store(force_dof >= 0.5f, std::memory_order_relaxed);
 }
 
 inline void Shutdown() {
   using namespace detail;
   shutting_down.store(true, std::memory_order_relaxed);
-  gtao_writes_enabled.store(false, std::memory_order_relaxed);
+  gtao_resolution_multiplier.store(1, std::memory_order_relaxed);
   if (fps_applied && fps_ready && AttachThread()) {
     WriteInt(set_target_frame_rate, original_target_frame_rate);
     WriteInt(set_vsync_count, original_vsync_count);

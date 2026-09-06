@@ -21,6 +21,7 @@ constexpr uint32_t kVisualTint = kFpsTint;
 std::atomic_uint32_t limiter_resume_delay = kLimiterResumeDelayFrames;
 bool hdr_requested_at_startup = false;
 bool hdr_available = false;
+bool frame_generation_available = false;
 
 const char* GetHDRUnavailableReason(reshade::api::device_api api) {
   if (api == reshade::api::device_api::d3d11) {
@@ -29,6 +30,9 @@ const char* GetHDRUnavailableReason(reshade::api::device_api api) {
   if (api != reshade::api::device_api::vulkan) return "DLSS-G HDR Patch requires Vulkan.";
   if (!endfield::vulkan_loader::IsInstalled()) {
     return "DLSS-G HDR Patch requires the bundled vulkan-1.dll next to Endfield.exe. Install it and restart the game.";
+  }
+  if (GetModuleHandleW(L"renodx-endfield.addon64") == nullptr) {
+    return "DLSS-G HDR Patch requires renodx-endfield.addon64 to be loaded. Install it next to Endfield.exe and restart the game.";
   }
   return nullptr;
 }
@@ -77,6 +81,8 @@ renodx::utils::settings::Setting* fps_limit_setting;
 renodx::utils::settings::Setting* frame_generation_fps_limit_setting;
 renodx::utils::settings::Setting* background_fps_limit_setting;
 renodx::utils::settings::Setting* hdr_warning_setting;
+renodx::utils::settings::Setting* dof_near_setting;
+renodx::utils::settings::Setting* dof_far_setting;
 
 bool IsEndfieldProcess() {
   wchar_t process_path[MAX_PATH] = {};
@@ -130,6 +136,7 @@ renodx::utils::settings::Settings settings = {
         .min = 0.f,
         .max = 480.f,
         .format = "%.0f FPS",
+        .is_enabled = [] { return frame_generation_available; },
         .on_change_value = [](float previous, float current) {
           ClampFpsLimit(
               frame_generation_fps_limit_setting, previous, current);
@@ -153,15 +160,79 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .key = "FullResolutionGTAO",
-        .binding = &endfield::enhancer::full_resolution_gtao,
+        .binding = &endfield::enhancer::gtao_resolution,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 0.f,
         .can_reset = false,
-        .label = "Full Resolution GTAO",
+        .label = "GTAO Resolution",
         .section = "Visual Improvements",
-        .tooltip = "Renders ambient occlusion at full resolution for finer shadow detail. May reduce performance.",
+        .tooltip = "Resolution of ambient occlusion buffers. Double resolution doubles both dimensions over full resolution, using four times as many pixels. May substantially reduce performance.",
+        .labels = {"Half Resolution (Vanilla)", "Full Resolution", "Double Resolution"},
+        .tint = kVisualTint,
+    },
+    new renodx::utils::settings::Setting{
+        .key = "FullResolutionDoF",
+        .binding = &endfield::enhancer::dof_resolution,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "DoF Resolution",
+        .section = "Depth of Field",
+        .tooltip = "Resolution of depth-of-field buffers, including native cutscene DoF when Force DoF is off. Half keeps the game's resolution policy. Full and Double override it; Double uses four times the pixels of Full.",
+        .labels = {"Half Resolution (Vanilla)", "Full Resolution", "Double Resolution"},
+        .tint = kVisualTint,
+    },
+    new renodx::utils::settings::Setting{
+        .key = "ForceDoF",
+        .binding = &endfield::enhancer::force_dof,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Force DoF",
+        .section = "Depth of Field",
+        .tooltip = "Forces High Quality Near + Far depth of field with manual focus and blur controls. Off restores the game's camera settings.",
         .labels = {"Off", "On"},
         .tint = kVisualTint,
+    },
+    new renodx::utils::settings::Setting{
+        .key = "DoFFocusDistance",
+        .binding = &endfield::enhancer::dof_focus_distance,
+        .value_type = renodx::utils::settings::SettingValueType::FLOAT,
+        .default_value = 10.f,
+        .label = "Focus Distance",
+        .section = "Depth of Field",
+        .tooltip = "Distance from the camera to the sharp focus region, in game world units. Foreground and background blur ranges move with it.",
+        .tint = kVisualTint,
+        .min = 0.5f,
+        .max = 200.f,
+        .format = "%.1f",
+        .is_enabled = [] { return endfield::enhancer::force_dof >= 0.5f; },
+    },
+    dof_near_setting = new renodx::utils::settings::Setting{
+        .key = "DoFNearBlur",
+        .binding = &endfield::enhancer::dof_near_blur,
+        .value_type = renodx::utils::settings::SettingValueType::FLOAT,
+        .default_value = 3.f,
+        .label = "Near Blur Strength",
+        .section = "Depth of Field",
+        .tooltip = "Maximum foreground blur radius. 0 disables foreground blur.",
+        .tint = kVisualTint,
+        .min = 0.f,
+        .max = 10.f,
+        .format = "%.1f",
+        .is_enabled = [] { return endfield::enhancer::force_dof >= 0.5f; },
+    },
+    dof_far_setting = new renodx::utils::settings::Setting{
+        .key = "DoFFarBlur",
+        .binding = &endfield::enhancer::dof_far_blur,
+        .value_type = renodx::utils::settings::SettingValueType::FLOAT,
+        .default_value = 5.f,
+        .label = "Far Blur Strength",
+        .section = "Depth of Field",
+        .tooltip = "Maximum background blur radius. 0 disables background blur.",
+        .tint = kVisualTint,
+        .min = 0.f,
+        .max = 10.f,
+        .format = "%.1f",
+        .is_enabled = [] { return endfield::enhancer::force_dof >= 0.5f; },
     },
     new renodx::utils::settings::Setting{
         .key = "HDRFrameGeneration",
@@ -197,7 +268,7 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
-        .label = "- Addon developed by ItsTheSewerRat.",
+        .label = "- Addon developed by Rat.",
         .section = "About",
     },
     new renodx::utils::settings::Setting{
@@ -214,6 +285,7 @@ renodx::utils::settings::Settings settings = {
 
 void OnOverlay(reshade::api::effect_runtime* runtime) {
   // Use this runtime's renderer, not DLL presence or a temporary probe device.
+  frame_generation_available = runtime->get_device()->get_api() == reshade::api::device_api::vulkan;
   const char* reason = GetHDRUnavailableReason(runtime->get_device()->get_api());
   hdr_available = reason == nullptr;
   hdr_warning_setting->label = reason == nullptr ? "" : reason;
@@ -236,6 +308,8 @@ void OnPresent(
   UpdateFpsLimitFormat(fps_limit_setting);
   UpdateFpsLimitFormat(frame_generation_fps_limit_setting);
   UpdateFpsLimitFormat(background_fps_limit_setting);
+  dof_near_setting->format = dof_near_setting->GetValue() == 0.f ? "Off" : "%.1f";
+  dof_far_setting->format = dof_far_setting->GetValue() == 0.f ? "Off" : "%.1f";
 
   endfield::enhancer::OnPresent(swapchain == nullptr ? nullptr : swapchain->get_device());
   endfield::hdr_output::OnPresent(swapchain);
