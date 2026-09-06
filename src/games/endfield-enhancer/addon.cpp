@@ -11,6 +11,7 @@
 #include "../../utils/swapchain.hpp"
 #include "./enhancer.hpp"
 #include "./lod.hpp"
+#include "./ssr_resolve.hpp"
 #include "./vulkan_loader_api.hpp"
 
 namespace {
@@ -62,6 +63,11 @@ void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
 }
 
 void OnInitDevice(reshade::api::device* device) {
+  // Install the SSR hook before the first render graph/history.
+  if (device != nullptr
+      && device->get_api() == reshade::api::device_api::vulkan) {
+    endfield::enhancer::TryInstallSsrResolutionHook();
+  }
   endfield::enhancer::TryInstallStreamlineHook(device);
 }
 
@@ -169,6 +175,43 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "Resolution of ambient occlusion buffers. Double resolution doubles both dimensions over full resolution, using four times as many pixels. May substantially reduce performance.",
         .labels = {"Half Resolution (Vanilla)", "Full Resolution", "Double Resolution"},
         .tint = kVisualTint,
+    },
+    new renodx::utils::settings::Setting{
+        .key = "SSRResolution",
+        .binding = &endfield::enhancer::ssr_resolution,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "SSR Resolution",
+        .section = "Screen Space Reflections",
+        .tooltip = "Controls reflection and depth resolution, with matching reflection alignment.",
+        .labels = {"Half Resolution (Vanilla)", "Full Resolution"},
+        .tint = kVisualTint,
+        .parse = [](float value) {
+          // Write() also runs on initial config load, not only UI changes.
+          endfield::enhancer::ssr_full_depth = value == 1.f ? 1.f : 0.f;
+          return value == 1.f ? 1.f : 0.f;
+        },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "ImprovedSSROverride",
+        .binding = &endfield::ssr_resolve::improved_override_setting,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "Improved SSR Override",
+        .section = "Screen Space Reflections",
+        .tooltip = "Uses resolution-corrected SSR at Full Resolution. Requires RenoDX Improved SSR On. Off leaves RenoDX in control.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+        .is_enabled = [] { return frame_generation_available && GetModuleHandleW(L"renodx-endfield.addon64") != nullptr; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "Override unavailable: unsupported base shader or pipeline. Restart without live shader overrides.",
+        .section = "Screen Space Reflections",
+        .tint = 0xE6AD45,
+        .is_visible = [] { return endfield::ssr_resolve::improved_override_setting == 1.f && endfield::ssr_resolve::override_failed.load(); },
     },
     new renodx::utils::settings::Setting{
         .key = "FullResolutionDoF",
@@ -312,6 +355,11 @@ void OnPresent(
   dof_far_setting->format = dof_far_setting->GetValue() == 0.f ? "Off" : "%.1f";
 
   endfield::enhancer::OnPresent(swapchain == nullptr ? nullptr : swapchain->get_device());
+  endfield::ssr_resolve::OnPresent(
+      endfield::enhancer::ssr_resolution == 1.f,
+      endfield::enhancer::ssr_resolution == 1.f
+          && endfield::ssr_resolve::improved_override_setting == 1.f
+          && GetModuleHandleW(L"renodx-endfield.addon64") != nullptr);
   endfield::hdr_output::OnPresent(swapchain);
   endfield::lod::OnPresent();
 
@@ -335,7 +383,7 @@ extern "C" __declspec(dllexport) const char* const NAME =
 extern "C" __declspec(dllexport) const char* const AUTHOR =
     "ItsTheSewerRat";
 extern "C" __declspec(dllexport) const char* const DESCRIPTION =
-    "FPS, GTAO, LOD, and HDR frame-generation improvements for Arknights: Endfield";
+    "FPS, SSR, GTAO, LOD, and HDR frame-generation improvements for Arknights: Endfield";
 
 BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
   if (reason == DLL_THREAD_ATTACH || reason == DLL_THREAD_DETACH) return TRUE;
@@ -366,6 +414,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
       reshade::unregister_event<reshade::addon_event::copy_texture_region>(endfield::hdr_output::OnPresentationCopyRegion);
       endfield::lod::Shutdown();
       endfield::enhancer::Shutdown();
+      endfield::ssr_resolve::Use(reason);
       endfield::hdr_output::UseEvents(reason);
       break;
   }
@@ -375,6 +424,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
   }
   renodx::utils::settings::Use(reason, &settings);
   if (reason == DLL_PROCESS_ATTACH) {
+    endfield::ssr_resolve::Use(reason);
     hdr_requested_at_startup = endfield::enhancer::hdr_frame_generation >= 0.5f;
     if (hdr_requested_at_startup && endfield::vulkan_loader::IsInstalled()) {
       // Reserve copy observation before the base addon can consume these events.

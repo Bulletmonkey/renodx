@@ -13,18 +13,18 @@ namespace endfield::enhancer {
 struct RenderQualityOverrides {
   struct Write {
     void* address = nullptr;
-    uint32_t original = 0;
-    uint32_t replacement = 0;
+    uint64_t original = 0;
+    uint64_t replacement = 0;
     size_t size = 0;
   };
-  // Three DoF quality/resolution writes and fifteen
-  // manual-focus writes including the current camera, debug flag and scale.
+  // Three DoF quality/resolution writes and fifteen manual-focus writes,
+  // including the current camera, debug flag and scale.
   std::array<Write, 18> writes = {};
   size_t count = 0;
 
   template <typename T>
   void Set(void* settings, size_t offset, T value) {
-    static_assert(sizeof(T) <= sizeof(uint32_t));
+    static_assert(sizeof(T) <= sizeof(uint64_t));
     if (settings == nullptr || count == writes.size()) return;
     auto* address = static_cast<uint8_t*>(settings) + offset;
     if (std::memcmp(address, &value, sizeof(value)) == 0) return;

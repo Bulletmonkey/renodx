@@ -17,6 +17,7 @@
 
 #include "./hdr_output.hpp"
 #include "./render_quality.hpp"
+#include "./ssr_depth.hpp"
 
 namespace endfield::enhancer {
 
@@ -25,6 +26,8 @@ inline float fps_limit = 120.f;
 inline float frame_generation_fps_limit = 240.f;
 inline float background_fps_limit = 60.f;
 inline float gtao_resolution = 0.f;
+inline float ssr_resolution = 0.f;
+inline float ssr_full_depth = 0.f;
 inline float dof_resolution = 0.f;
 inline float force_dof = 0.f;
 inline float dof_focus_distance = 10.f;
@@ -59,6 +62,8 @@ using FieldGetOffset = size_t (*)(void*);
 using RuntimeInvoke = void* (*)(Il2CppMethod, void*, void**, void**);
 using ObjectUnbox = void* (*)(void*);
 using RenderPath = void (*)(int64_t, void*, void*, void*, void*, void*);
+using RenderSsr = void (*)(void*, void*, int32_t, void*, void*, bool);
+using ResetSsr = void (*)(void*);
 using ResolveICall = void* (*)(const char*);
 using ObjectWithInstanceIDExists = bool (*)(int32_t);
 
@@ -79,6 +84,8 @@ inline Il2CppMethod set_target_frame_rate = nullptr;
 inline Il2CppMethod get_vsync_count = nullptr;
 inline Il2CppMethod set_vsync_count = nullptr;
 inline RenderPath render_path = nullptr;
+inline RenderSsr render_ssr = nullptr;
+inline ResetSsr reset_ssr = nullptr;
 inline PFun_slDLSSGSetOptions* set_frame_generation_options = nullptr;
 inline PFun_slSetTag* set_tags = nullptr;
 inline PFun_slSetTagForFrame* set_tags_for_frame = nullptr;
@@ -105,6 +112,20 @@ struct DoFManualOffsets {
 inline DoFManualOffsets dof_manual = {};
 inline size_t native_camera_instance_id_offset = 0;
 inline ObjectWithInstanceIDExists object_with_instance_id_exists = nullptr;
+// Low bits: full resolution (1), full depth (2). Remaining bits: choice
+// generation, so dormant cameras cannot miss a switch away and back.
+inline std::atomic_uint64_t ssr_resolution_state = 0;
+struct SsrInstanceState {
+  void* instance = nullptr;  // Identity only; never dereferenced from the cache.
+  uint64_t resolution_state = 0;
+};
+inline std::array<SsrInstanceState, 64> ssr_instances = {};
+inline size_t ssr_next_instance = 0;
+inline SRWLOCK ssr_instances_lock = SRWLOCK_INIT;
+inline std::atomic_uint64_t ssr_last_logged_dimensions = 0;
+inline std::atomic_bool ssr_router_observed = false;
+inline std::array<uint8_t, 16> ssr_installed_entry = {};
+inline std::atomic_bool ssr_resolution_failed = false;
 inline std::atomic<float> dof_resolution_override = 0.f;
 inline std::atomic_bool dof_force_override = false;
 inline std::atomic<float> dof_focus_override = 10.f;
@@ -129,6 +150,7 @@ inline std::atomic_bool frame_generation_paused = true;
 inline bool gtao_ready = false;
 inline bool fps_applied = false;
 inline bool render_path_hook_installed = false;
+inline bool ssr_resolution_hook_installed = false;
 inline int original_target_frame_rate = -1;
 inline int original_vsync_count = 0;
 inline int last_applied_fps = 0;
@@ -228,6 +250,316 @@ inline bool ResolveCppFieldOffset(
   }
 
   *offset = metadata_offset - kObjectHeaderSize;
+  return true;
+}
+
+// The engine's own reset releases graph references and marks firstFrame.
+// Do this on the graph-building thread, not from the UI/present callback.
+inline bool ResetSsrHistoryForResolution(void* self, uint64_t resolution_state) {
+  bool reset = false;
+  AcquireSRWLockExclusive(&ssr_instances_lock);
+  __try {
+    SsrInstanceState* state = nullptr;
+    for (auto& entry : ssr_instances) {
+      if (entry.instance == self) {
+        state = &entry;
+        break;
+      }
+    }
+    // After any live change, an evicted/new identity is conservatively reset.
+    // Before the first change, the startup path remains untouched.
+    reset = resolution_state >= 4
+            && (state == nullptr || state->resolution_state != resolution_state);
+    if (reset) reset_ssr(self);
+    // Publish only after reset succeeds. Native exceptions propagate and the
+    // finally block unlocks; a failed reset never consumes this generation.
+    if (state == nullptr) {
+      state = &ssr_instances[ssr_next_instance];
+      ssr_next_instance = (ssr_next_instance + 1) % ssr_instances.size();
+    }
+    *state = {self, resolution_state};
+  } __finally {
+    ReleaseSRWLockExclusive(&ssr_instances_lock);
+  }
+  return reset;
+}
+
+// UnityPlayer's SSR-only graph input is stack-local in both native callers.
+// Offset 0x14 selects the built-in full-size branch in both SSR implementations.
+// Do not change the shared camera mode, source dimensions, or quality settings.
+inline void HookedRenderSsr(
+    void* self, void* graph, int32_t pass, void* input, void* output, bool wetness) {
+  RenderQualityOverrides quality;
+  ssr_depth::Context depth_context = {graph, 0, 0};
+  const auto* previous_depth_context = ssr_depth::active;
+  const uint64_t resolution_state = ssr_resolution_state.load(std::memory_order_relaxed);
+  bool prepare_resolution = false;
+  if (!ssr_router_observed.exchange(true, std::memory_order_relaxed)) {
+    Log(reshade::log::level::info, "Endfield enhancer: UnityPlayer SSR router entered.");
+  }
+  if (!shutting_down.load(std::memory_order_relaxed)
+      && !ssr_resolution_failed.load(std::memory_order_relaxed)
+      && input != nullptr && self != nullptr && reset_ssr != nullptr) {
+    __try {
+      auto* data = static_cast<uint8_t*>(input);
+      const int32_t width = *reinterpret_cast<const int32_t*>(data + 0x04);
+      const int32_t height = *reinterpret_cast<const int32_t*>(data + 0x08);
+      if (data[0] != 0 && (wetness || data[3] == 0) && width > 0 && height > 0
+          && width <= 16384 && height <= 16384) {
+        const int32_t original_mode = *reinterpret_cast<const int32_t*>(data + 0x14);
+        if ((resolution_state & 1) != 0) {
+          quality.Set<int32_t>(input, 0x14, 4);
+        }
+        depth_context.width = width;
+        depth_context.height = height;
+        const uint64_t dimensions =
+            (static_cast<uint64_t>(width) << 32) | static_cast<uint32_t>(height);
+        if (ssr_last_logged_dimensions.exchange(dimensions, std::memory_order_relaxed)
+            != dimensions) {
+          auto* settings = *reinterpret_cast<const uint8_t* const*>(data + 0x18);
+          auto* debug = *reinterpret_cast<const uint8_t* const*>(data + 0x28);
+          const bool v2 = debug != nullptr && debug[0x122] != 0
+                              ? debug[0x123] != 0
+                              : settings != nullptr && settings[0x1E1] != 0;
+          char message[256];
+          std::snprintf(
+              message, sizeof(message),
+              "Endfield enhancer: UnityPlayer SSR router reached (V%d, source %dx%d, mode %d -> %d, full-resolution request %s). GPU dimensions require capture verification.",
+              v2 ? 2 : 1, width, height, original_mode,
+              *reinterpret_cast<const int32_t*>(data + 0x14),
+              (resolution_state & 1) != 0 ? "on" : "off");
+          Log(reshade::log::level::info, message);
+        }
+        prepare_resolution = true;
+      }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      ssr_resolution_failed.store(true, std::memory_order_relaxed);
+      quality.Restore();
+      Log(reshade::log::level::error,
+          "Endfield enhancer: native SSR input access failed; override disabled until restart.");
+    }
+  }
+  // Preserve native exceptions and always restore our temporary input write.
+  __try {
+    ssr_depth::active = prepare_resolution && (resolution_state & 2) != 0
+                            ? &depth_context : nullptr;
+    if (prepare_resolution && ResetSsrHistoryForResolution(self, resolution_state)) {
+      char message[160];
+      std::snprintf(message, sizeof(message),
+                    "Endfield enhancer: SSR history reset for instance %p; resolution %s, full depth %s (generation %llu).",
+                    self, (resolution_state & 1) != 0 ? "Native" : "Vanilla",
+                    (resolution_state & 2) != 0 ? "on" : "off",
+                    static_cast<unsigned long long>(resolution_state >> 2));
+      Log(reshade::log::level::info, message);
+    }
+    render_ssr(self, graph, pass, input, output, wetness);
+  } __finally {
+    if (!quality.Restore()) {
+      ssr_resolution_failed.store(true, std::memory_order_relaxed);
+      Log(reshade::log::level::error,
+          "Endfield enhancer: native SSR input restoration failed; override disabled until restart.");
+    }
+    ssr_depth::active = previous_depth_context;
+  }
+}
+
+inline bool ValidateNativeSsrRouter(
+    HMODULE unity_player,
+    const void* method_pointer) {
+  constexpr DWORD kSupportedGameTimestamp = 0x6A858DB7;
+  constexpr DWORD kSupportedGameImageSize = 0x00CC000;
+  constexpr DWORD kSupportedAssemblyTimestamp = 0x6A85914F;
+  constexpr DWORD kSupportedAssemblyImageSize = 0x0208B000;
+  constexpr uint8_t kExpectedPrologue[] = {
+      0x40, 0x53, 0x48, 0x83, 0xEC, 0x30, 0x80, 0x7C,
+      0x24, 0x68, 0x00, 0x4C, 0x8B, 0xDA, 0x48, 0x8B,
+      0xD9, 0x75, 0x0D, 0x41, 0x80, 0x39, 0x00, 0x74,
+      0x07, 0x41, 0x80, 0x79, 0x03, 0x00, 0x75, 0x52,
+      0x49, 0x8B, 0x41, 0x18, 0x49, 0x8B, 0x49, 0x28,
+      0x0F, 0xB6, 0x90, 0xE1, 0x01, 0x00, 0x00};
+  if (unity_player == nullptr || method_pointer == nullptr) return false;
+
+  __try {
+    auto has_identity = [](HMODULE module, DWORD timestamp, DWORD image_size) {
+      if (module == nullptr) return false;
+      auto* module_base = reinterpret_cast<const uint8_t*>(module);
+      auto* module_dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module_base);
+      if (module_dos->e_magic != IMAGE_DOS_SIGNATURE
+          || module_dos->e_lfanew <= 0) {
+        return false;
+      }
+      auto* module_nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(
+          module_base + module_dos->e_lfanew);
+      return module_nt->Signature == IMAGE_NT_SIGNATURE
+             && module_nt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64
+             && module_nt->FileHeader.TimeDateStamp == timestamp
+             && module_nt->OptionalHeader.SizeOfImage == image_size;
+    };
+    if (!has_identity(
+            GetModuleHandleW(nullptr),
+            kSupportedGameTimestamp,
+            kSupportedGameImageSize)
+        || !has_identity(
+            unity_player,
+            kSupportedAssemblyTimestamp,
+            kSupportedAssemblyImageSize)) {
+      return false;
+    }
+
+    auto* base = reinterpret_cast<const uint8_t*>(unity_player);
+    auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+
+    if (!ssr_depth::ValidateTargets(base, nt)) return false;
+
+    auto* method = static_cast<const uint8_t*>(method_pointer);
+    if (method < base
+        || method + sizeof(kExpectedPrologue) > base + nt->OptionalHeader.SizeOfImage
+        || std::memcmp(method, kExpectedPrologue, sizeof(kExpectedPrologue)) != 0) {
+      return false;
+    }
+
+    // Guard the router calls and both full-resolution branches as well as
+    // the entry point. Never reinterpret an updated engine's input layout.
+    constexpr uint8_t kV2Call[] = {0xE8, 0x44, 0x83, 0xD0, 0xFF};
+    constexpr uint8_t kV1Call[] = {0xE8, 0xC5, 0x8A, 0x20, 0x01};
+    constexpr uint8_t kV2Branch[] = {
+        0x41, 0x83, 0x7C, 0x24, 0x14, 0x04, 0x48, 0x89,
+        0x5D, 0x48, 0x0F, 0x84, 0x28, 0xF1, 0xD1, 0x00};
+    constexpr uint8_t kV1Branch[] = {
+        0x41, 0x83, 0x7C, 0x24, 0x14, 0x04, 0x75, 0x13,
+        0x49, 0x8B, 0x7C, 0x24, 0x04};
+    constexpr uint8_t kV2FullSize[] = {
+        0x49, 0x8B, 0x5C, 0x24, 0x04, 0x48, 0x89, 0x5D, 0x90,
+        0x44, 0x8B, 0x6D, 0x94, 0x44, 0x8B, 0x75, 0x90,
+        0x44, 0x89, 0x6D, 0xD8, 0x44, 0x89, 0x75, 0xE0,
+        0x48, 0x89, 0x5D, 0x48, 0xE9, 0xB6, 0x0E, 0x2E, 0xFF};
+    // Exact complete reset and reference-release functions, plus both native
+    // callers. These govern persistent history ownership during live changes.
+    constexpr uint8_t kSsrReset[] = {
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x30, 0x48, 0x8B,
+        0xD9, 0xC6, 0x41, 0x28, 0x01, 0x33, 0xFF, 0x89, 0x79, 0x04, 0x33, 0xC9,
+        0x48, 0x8B, 0x43, 0x08, 0x48, 0x89, 0x4B, 0x08, 0x48, 0x8D, 0x4C, 0x24,
+        0x20, 0x48, 0x89, 0x44, 0x24, 0x20, 0x48, 0x8B, 0x43, 0x10, 0x48, 0x89,
+        0x44, 0x24, 0x28, 0x48, 0x89, 0x7B, 0x10, 0xE8, 0x04, 0x04, 0x00, 0x00,
+        0x48, 0x8B, 0x43, 0x18, 0x33, 0xC9, 0x48, 0x89, 0x4B, 0x18, 0x48, 0x8D,
+        0x4C, 0x24, 0x20, 0x48, 0x89, 0x44, 0x24, 0x20, 0x48, 0x8B, 0x43, 0x20,
+        0x48, 0x89, 0x44, 0x24, 0x28, 0x48, 0x89, 0x7B, 0x20, 0xE8, 0xDE, 0x03,
+        0x00, 0x00, 0x89, 0x7B, 0x2C, 0x33, 0xC9, 0x48, 0x8B, 0x43, 0x38, 0x48,
+        0x89, 0x4B, 0x38, 0x48, 0x8D, 0x4C, 0x24, 0x20, 0x48, 0x89, 0x44, 0x24,
+        0x20, 0x48, 0x8B, 0x43, 0x40, 0x48, 0x89, 0x44, 0x24, 0x28, 0x48, 0x89,
+        0x7B, 0x40, 0xE8, 0xB5, 0x03, 0x00, 0x00, 0x48, 0x8B, 0x43, 0x48, 0x33,
+        0xC9, 0x48, 0x89, 0x4B, 0x48, 0x48, 0x8D, 0x4C, 0x24, 0x20, 0x48, 0x89,
+        0x44, 0x24, 0x20, 0x48, 0x8B, 0x43, 0x50, 0x48, 0x89, 0x44, 0x24, 0x28,
+        0x48, 0x89, 0x7B, 0x50, 0xE8, 0x8F, 0x03, 0x00, 0x00, 0x48, 0x8B, 0x43,
+        0x58, 0x33, 0xC9, 0x48, 0x89, 0x4B, 0x58, 0x48, 0x8D, 0x4C, 0x24, 0x20,
+        0x48, 0x89, 0x44, 0x24, 0x20, 0x48, 0x8B, 0x43, 0x60, 0x48, 0x89, 0x44,
+        0x24, 0x28, 0x48, 0x89, 0x7B, 0x60, 0xE8, 0x69, 0x03, 0x00, 0x00, 0x48,
+        0x8B, 0x5C, 0x24, 0x40, 0x48, 0x83, 0xC4, 0x30, 0x5F, 0xC3};
+    constexpr uint8_t kSsrRelease[] = {
+        0x83, 0x39, 0x00, 0x74, 0x12, 0x8B, 0x11, 0x48,
+        0x8B, 0x41, 0x08, 0x48, 0xC1, 0xE2, 0x06, 0x48,
+        0x8B, 0x48, 0x30, 0xFF, 0x4C, 0x0A, 0x08, 0xC3};
+    constexpr uint8_t kV2ResetCall[] = {0xE8, 0xFC, 0x18, 0x1F, 0x00};
+    constexpr uint8_t kV1ResetCall[] = {0xE8, 0x10, 0x32, 0xCF, 0xFE};
+    if (std::memcmp(base + 0x3A3B60, kSsrReset, sizeof(kSsrReset)) != 0
+        || std::memcmp(base + 0x3A3FA0, kSsrRelease, sizeof(kSsrRelease)) != 0
+        || std::memcmp(base + 0x1B225F, kV2ResetCall, sizeof(kV2ResetCall)) != 0
+        || std::memcmp(base + 0x16B094B, kV1ResetCall, sizeof(kV1ResetCall)) != 0) {
+      return false;
+    }
+    if (method != base + 0x4A7D70
+        || std::memcmp(base + 0x4A7DD7, kV2Call, sizeof(kV2Call)) != 0
+        || std::memcmp(base + 0x4A7E16, kV1Call, sizeof(kV1Call)) != 0
+        || std::memcmp(base + 0x1B024A, kV2Branch, sizeof(kV2Branch)) != 0
+        || std::memcmp(base + 0x16B0A42, kV1Branch, sizeof(kV1Branch)) != 0
+        || std::memcmp(base + 0xECF382, kV2FullSize, sizeof(kV2FullSize)) != 0) {
+      return false;
+    }
+
+    size_t matches = 0;
+    size_t reset_matches = 0;
+    auto* section = IMAGE_FIRST_SECTION(nt);
+    for (WORD index = 0; index < nt->FileHeader.NumberOfSections; ++index) {
+      if ((section[index].Characteristics & IMAGE_SCN_MEM_EXECUTE) == 0) continue;
+      const size_t size = section[index].Misc.VirtualSize;
+      const size_t virtual_address = section[index].VirtualAddress;
+      if (size < sizeof(kExpectedPrologue)
+          || virtual_address >= nt->OptionalHeader.SizeOfImage
+          || size > nt->OptionalHeader.SizeOfImage - virtual_address) {
+        continue;
+      }
+      const uint8_t* start = base + section[index].VirtualAddress;
+      for (size_t offset = 0; offset <= size - sizeof(kExpectedPrologue); ++offset) {
+        if (size >= sizeof(kSsrReset) && offset <= size - sizeof(kSsrReset)
+            && std::memcmp(start + offset, kSsrReset, sizeof(kSsrReset)) == 0) {
+          if (++reset_matches > 1) return false;
+        }
+        if (std::memcmp(start + offset, kExpectedPrologue, sizeof(kExpectedPrologue)) == 0) {
+          ++matches;
+          if (matches > 1) return false;
+        }
+      }
+    }
+    return matches == 1 && reset_matches == 1;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
+inline bool InstallSsrResolutionHook() {
+  if (ssr_resolution_hook_installed) return true;
+  if (ssr_resolution_failed.load(std::memory_order_relaxed)) return false;
+  HMODULE unity_player = GetModuleHandleW(L"UnityPlayer.dll");
+  if (unity_player == nullptr) return false;
+  render_ssr = reinterpret_cast<RenderSsr>(
+      reinterpret_cast<uint8_t*>(unity_player) + 0x4A7D70);
+  if (!ValidateNativeSsrRouter(unity_player, reinterpret_cast<void*>(render_ssr))) {
+    render_ssr = nullptr;
+    ssr_resolution_failed.store(true, std::memory_order_relaxed);
+    Log(reshade::log::level::error,
+        "Endfield enhancer: unsupported UnityPlayer SSR router; resolution override disabled.");
+    return false;
+  }
+
+  reset_ssr = reinterpret_cast<ResetSsr>(
+      reinterpret_cast<uint8_t*>(unity_player) + 0x3A3B60);
+  ssr_depth::build_pyramid = reinterpret_cast<ssr_depth::BuildPyramid>(
+      reinterpret_cast<uint8_t*>(unity_player) + 0x1AEFF0);
+  ssr_depth::register_full = reinterpret_cast<ssr_depth::RegisterRay>(
+      reinterpret_cast<uint8_t*>(unity_player) + 0xE623B0);
+  ssr_depth::register_low = reinterpret_cast<ssr_depth::RegisterRay>(
+      reinterpret_cast<uint8_t*>(unity_player) + 0xE62580);
+  ssr_depth::add_read = reinterpret_cast<ssr_depth::AddRead>(
+      reinterpret_cast<uint8_t*>(unity_player) + 0xF4E5F8);
+  // Initial choice precedes all graph/history creation. Later choices carry
+  // a generation and reset each instance on its next native render call.
+  ssr_resolution_state.store((ssr_resolution == 1.f ? 1u : 0u)
+                                | (ssr_full_depth == 1.f ? 2u : 0u), std::memory_order_relaxed);
+  if (ssr_resolution == 2.f) {
+    Log(reshade::log::level::warning,
+        "Endfield enhancer: obsolete Double SSR selection is unsupported; using vanilla.");
+  }
+  if (DetourTransactionBegin() != NO_ERROR) return false;
+  if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
+      || DetourAttach(&render_ssr, HookedRenderSsr) != NO_ERROR
+      || DetourAttach(&ssr_depth::build_pyramid, ssr_depth::HookedBuildPyramid) != NO_ERROR
+      || DetourAttach(&ssr_depth::register_full, ssr_depth::HookedRegisterFull) != NO_ERROR
+      || DetourAttach(&ssr_depth::register_low, ssr_depth::HookedRegisterLow) != NO_ERROR) {
+    DetourTransactionAbort();
+    render_ssr = nullptr;
+    return false;
+  }
+  if (DetourTransactionCommit() != NO_ERROR) {
+    render_ssr = nullptr;
+    return false;
+  }
+  std::memcpy(ssr_installed_entry.data(),
+              reinterpret_cast<const uint8_t*>(unity_player) + 0x4A7D70,
+              ssr_installed_entry.size());
+  ssr_resolution_hook_installed = true;
+  Log(reshade::log::level::info,
+      "Endfield enhancer: UnityPlayer SSR router hook installed; awaiting native render call.");
   return true;
 }
 
@@ -810,6 +1142,12 @@ inline bool TryInstallStreamlineHook(reshade::api::device* device) {
   return detail::InstallStreamlineHook(device);
 }
 
+inline bool TryInstallSsrResolutionHook() {
+  using namespace detail;
+  if (shutting_down.load(std::memory_order_relaxed)) return false;
+  return InstallSsrResolutionHook();
+}
+
 inline float GetActiveFpsLimit(bool foreground) {
   if (!foreground) return background_fps_limit;
   if (detail::frame_generation_presenting.load(std::memory_order_relaxed)
@@ -824,6 +1162,7 @@ inline void OnPresent(reshade::api::device* device) {
   if (shutting_down.load(std::memory_order_relaxed)) return;
 
   ++present_count;
+  ssr_depth::epoch.fetch_add(1, std::memory_order_relaxed);
 
   const bool unlock_enabled = fps_unlock >= 0.5f;
   const bool frame_generation_detection_requested =
@@ -844,6 +1183,35 @@ inline void OnPresent(reshade::api::device* device) {
   }
 
   const bool gtao_enabled = gtao_resolution == 1.f || gtao_resolution == 2.f;
+  if (ssr_resolution_hook_installed && !ssr_resolution_failed.load(std::memory_order_relaxed)) {
+    uint64_t previous = ssr_resolution_state.load(std::memory_order_relaxed);
+    const uint64_t requested = (ssr_resolution == 1.f ? 1u : 0u)
+                               | (ssr_full_depth == 1.f ? 2u : 0u);
+    while ((previous & 3) != requested) {
+      if (ssr_resolution_state.compare_exchange_weak(
+              previous, ((previous + 4) & ~uint64_t{3}) | requested,
+              std::memory_order_relaxed)) {
+        ssr_last_logged_dimensions.store(0, std::memory_order_relaxed);
+        break;
+      }
+    }
+  }
+  if (present_count == 600 && ssr_resolution_hook_installed
+      && !ssr_router_observed.load(std::memory_order_relaxed)) {
+    __try {
+      auto* entry = reinterpret_cast<const uint8_t*>(GetModuleHandleW(L"UnityPlayer.dll")) + 0x4A7D70;
+      char message[224];
+      std::snprintf(
+          message, sizeof(message),
+          "Endfield enhancer: SSR router not entered after 600 presents; installed entry bytes %s (current %02X %02X %02X %02X %02X).",
+          std::memcmp(entry, ssr_installed_entry.data(), ssr_installed_entry.size()) == 0
+              ? "unchanged" : "CHANGED",
+          entry[0], entry[1], entry[2], entry[3], entry[4]);
+      Log(reshade::log::level::warning, message);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      Log(reshade::log::level::warning, "Endfield enhancer: SSR entry diagnostic could not read UnityPlayer.");
+    }
+  }
   const bool render_path_hook_requested =
       gtao_enabled || frame_generation_detection_requested
       || dof_resolution == 1.f || dof_resolution == 2.f || force_dof >= 0.5f;
@@ -870,11 +1238,20 @@ inline void Shutdown() {
     fps_applied = false;
   }
 
-  if (!render_path_hook_installed && !streamline_hook_installed) {
+  if (!ssr_resolution_hook_installed
+      && !render_path_hook_installed && !streamline_hook_installed) {
     return;
   }
   if (DetourTransactionBegin() != NO_ERROR) return;
   if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR) {
+    DetourTransactionAbort();
+    return;
+  }
+  if (ssr_resolution_hook_installed
+      && (DetourDetach(&ssr_depth::register_low, ssr_depth::HookedRegisterLow) != NO_ERROR
+          || DetourDetach(&ssr_depth::register_full, ssr_depth::HookedRegisterFull) != NO_ERROR
+          || DetourDetach(&ssr_depth::build_pyramid, ssr_depth::HookedBuildPyramid) != NO_ERROR
+          || DetourDetach(&render_ssr, HookedRenderSsr) != NO_ERROR)) {
     DetourTransactionAbort();
     return;
   }
@@ -912,6 +1289,13 @@ inline void Shutdown() {
     return;
   }
   if (DetourTransactionCommit() == NO_ERROR) {
+    ssr_resolution_hook_installed = false;
+    render_ssr = nullptr;
+    reset_ssr = nullptr;
+    ssr_depth::build_pyramid = nullptr;
+    ssr_depth::register_full = nullptr;
+    ssr_depth::register_low = nullptr;
+    ssr_depth::add_read = nullptr;
     render_path_hook_installed = false;
     gtao_ready = false;
     streamline_hook_installed = false;
