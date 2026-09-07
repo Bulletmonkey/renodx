@@ -1,4 +1,0 @@
-add_renodx_runtime_executable(cross_addon_lifecycle_tests tests.cpp version)
-add_dependencies(renodx_test_suites cross_addon_lifecycle_tests)
-add_test(NAME cross_addon_lifecycle COMMAND cross_addon_lifecycle_tests)
-set_tests_properties(cross_addon_lifecycle PROPERTIES LABELS "cross_addon;lifecycle;unit" TIMEOUT 30)

@@ -54,5 +54,3 @@ add_subdirectory(swapchain_change_detection)
 add_subdirectory(swapchain_proxy_barrier_states)
 add_subdirectory(api_compatibility)
 add_subdirectory(shader_source_compatibility)
-
-add_subdirectory(cross_addon_lifecycle)

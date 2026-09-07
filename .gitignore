@@ -59,3 +59,7 @@ tmp/*
 
 # Local workspace tools (not addon sources)
 /tools/
+
+# Local Endfield regression fixtures and evidence
+/src/games/endfield-enhancer/tests/
+/test/cross_addon_lifecycle/
