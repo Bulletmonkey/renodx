@@ -63,3 +63,6 @@ tmp/*
 # Local Endfield regression fixtures and evidence
 /src/games/endfield-enhancer/tests/
 /test/cross_addon_lifecycle/
+
+# Local DevKit regression fixtures
+/test/devkit_resource_analysis/

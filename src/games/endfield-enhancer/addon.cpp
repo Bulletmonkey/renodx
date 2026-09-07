@@ -28,6 +28,17 @@ bool frame_generation_available = false;
 bool ssr_override_available = false;
 reshade::api::device* overlay_device = nullptr;
 
+bool HasSsrBaseAddon(reshade::api::device_api api) {
+  switch (api) {
+    case reshade::api::device_api::d3d11:
+      return GetModuleHandleW(L"renodx-endfield-dx11.addon64") != nullptr;
+    case reshade::api::device_api::vulkan:
+      return GetModuleHandleW(L"renodx-endfield.addon64") != nullptr;
+    default:
+      return false;
+  }
+}
+
 const char* GetHDRUnavailableReason(reshade::api::device_api api) {
   if (api == reshade::api::device_api::d3d11) {
     return "DLSS-G HDR Patch is unavailable in DirectX 11. Launch the game with Vulkan.";
@@ -209,7 +220,7 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "Uses resolution-corrected SSR at Full Resolution. Requires RenoDX Improved SSR On. Automatically selects DirectX 11 or Vulkan. Off leaves RenoDX in control.",
         .labels = {"Off", "On"},
         .tint = kVisualTint,
-        .is_enabled = [] { return ssr_override_available && GetModuleHandleW(L"renodx-endfield.addon64") != nullptr; },
+        .is_enabled = [] { return ssr_override_available; },
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
@@ -360,8 +371,7 @@ void OnOverlay(reshade::api::effect_runtime* runtime) {
   overlay_device = runtime->get_device();
   // Use this runtime's renderer, not DLL presence or a temporary probe device.
   frame_generation_available = runtime->get_device()->get_api() == reshade::api::device_api::vulkan;
-  ssr_override_available = frame_generation_available
-                           || runtime->get_device()->get_api() == reshade::api::device_api::d3d11;
+  ssr_override_available = HasSsrBaseAddon(runtime->get_device()->get_api());
   const char* reason = GetHDRUnavailableReason(runtime->get_device()->get_api());
   hdr_available = reason == nullptr;
   hdr_warning_setting->label = reason == nullptr ? "" : reason;
@@ -394,7 +404,8 @@ void OnPresent(
       endfield::enhancer::ssr_resolution == 1.f,
       endfield::enhancer::ssr_resolution == 1.f
           && endfield::ssr_resolve::improved_override_setting == 1.f
-          && GetModuleHandleW(L"renodx-endfield.addon64") != nullptr);
+          && swapchain != nullptr
+          && HasSsrBaseAddon(swapchain->get_device()->get_api()));
   endfield::hdr_output::OnPresent(swapchain);
   endfield::lod::OnPresent();
 
