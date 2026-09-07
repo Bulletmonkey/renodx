@@ -164,6 +164,13 @@ inline void DeactivateEvents(ModuleRecord& module) {
 
 template <typename Data>
 inline ModuleRecord* ElectHandler(ControlBlock<Data>& control) {
+  // Keep live callbacks in registration order. Records survive module reloads,
+  // so an older sequence does not imply an earlier registration this lifetime.
+  // Preemption would move resource initialization behind dependent addon events.
+  if (control.event_handler != nullptr && control.event_handler->active) {
+    return control.event_handler;
+  }
+
   ModuleRecord* handler = nullptr;
 
   for (auto* module = control.modules; module != nullptr; module = module->next) {
