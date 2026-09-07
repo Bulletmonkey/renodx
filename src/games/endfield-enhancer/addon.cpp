@@ -10,6 +10,7 @@
 #include "../../utils/settings.hpp"
 #include "../../utils/swapchain.hpp"
 #include "./enhancer.hpp"
+#include "./uncensor.hpp"
 #include "./lod.hpp"
 #include "./ssr_resolve.hpp"
 #include "./runtime_status.hpp"
@@ -24,6 +25,7 @@ std::atomic_uint32_t limiter_resume_delay = kLimiterResumeDelayFrames;
 bool hdr_requested_at_startup = false;
 bool hdr_available = false;
 bool frame_generation_available = false;
+bool ssr_override_available = false;
 reshade::api::device* overlay_device = nullptr;
 
 const char* GetHDRUnavailableReason(reshade::api::device_api api) {
@@ -67,7 +69,8 @@ void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
 void OnInitDevice(reshade::api::device* device) {
   // Install the SSR hook before the first render graph/history.
   if (device != nullptr
-      && device->get_api() == reshade::api::device_api::vulkan) {
+      && (device->get_api() == reshade::api::device_api::vulkan
+          || device->get_api() == reshade::api::device_api::d3d11)) {
     endfield::enhancer::TryInstallSsrResolutionHook();
   }
   endfield::enhancer::TryInstallStreamlineHook(device);
@@ -203,14 +206,14 @@ renodx::utils::settings::Settings settings = {
         .can_reset = false,
         .label = "Improved SSR Override",
         .section = "Screen Space Reflections",
-        .tooltip = "Uses resolution-corrected SSR at Full Resolution. Requires RenoDX Improved SSR On. Off leaves RenoDX in control.",
+        .tooltip = "Uses resolution-corrected SSR at Full Resolution. Requires RenoDX Improved SSR On. Automatically selects DirectX 11 or Vulkan. Off leaves RenoDX in control.",
         .labels = {"Off", "On"},
         .tint = kVisualTint,
-        .is_enabled = [] { return frame_generation_available && GetModuleHandleW(L"renodx-endfield.addon64") != nullptr; },
+        .is_enabled = [] { return ssr_override_available && GetModuleHandleW(L"renodx-endfield.addon64") != nullptr; },
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
-        .label = "Override unavailable: unsupported base shader or pipeline. Restart without live shader overrides.",
+        .label = "Override unavailable; base shaders retained. See ReShade.log for the cause.",
         .section = "Screen Space Reflections",
         .tint = 0xE6AD45,
         .is_visible = [] { return endfield::ssr_resolve::improved_override_setting == 1.f && endfield::ssr_resolve::override_failed.load(); },
@@ -320,6 +323,23 @@ renodx::utils::settings::Settings settings = {
         .tint = kVisualTint,
     },
     new renodx::utils::settings::Setting{
+        .key = "Uncensor",
+        .binding = &endfield::uncensor::enabled,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Uncensor",
+        .section = "Camera",
+        .tooltip = "Disables camera-driven character transparency. May also affect proximity fading.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "Uncensor unavailable for this game build or another camera patch is active.",
+        .section = "Camera",
+        .is_visible = []() { return endfield::uncensor::unavailable; },
+    },
+    new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
         .label = "- Addon developed by Rat.",
         .section = "About",
@@ -340,6 +360,8 @@ void OnOverlay(reshade::api::effect_runtime* runtime) {
   overlay_device = runtime->get_device();
   // Use this runtime's renderer, not DLL presence or a temporary probe device.
   frame_generation_available = runtime->get_device()->get_api() == reshade::api::device_api::vulkan;
+  ssr_override_available = frame_generation_available
+                           || runtime->get_device()->get_api() == reshade::api::device_api::d3d11;
   const char* reason = GetHDRUnavailableReason(runtime->get_device()->get_api());
   hdr_available = reason == nullptr;
   hdr_warning_setting->label = reason == nullptr ? "" : reason;
@@ -367,6 +389,7 @@ void OnPresent(
   dof_far_setting->format = dof_far_setting->GetValue() == 0.f ? "Off" : "%.1f";
 
   endfield::enhancer::OnPresent(swapchain == nullptr ? nullptr : swapchain->get_device());
+  endfield::uncensor::OnPresent();
   endfield::ssr_resolve::OnPresent(
       endfield::enhancer::ssr_resolution == 1.f,
       endfield::enhancer::ssr_resolution == 1.f
@@ -426,6 +449,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
       reshade::unregister_event<reshade::addon_event::copy_texture_region>(endfield::hdr_output::OnPresentationCopyRegion);
       endfield::lod::Shutdown();
       endfield::enhancer::Shutdown();
+      endfield::uncensor::Shutdown();
       endfield::ssr_resolve::Use(reason);
       endfield::hdr_output::UseEvents(reason);
       break;

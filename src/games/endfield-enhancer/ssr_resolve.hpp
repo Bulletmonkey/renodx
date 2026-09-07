@@ -3,10 +3,12 @@
 #include <atomic>
 #include <array>
 #include <mutex>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 #include "./ssr_resolve_spirv.hpp"
+#include "./ssr_resolve_dx11.hpp"
 #include "../../utils/command_action.hpp"
 
 namespace endfield::ssr_resolve {
@@ -45,8 +47,11 @@ inline constexpr auto on_dispatch = []<typename Context>(Context& context)
                                 renodx::utils::command_action::DispatchArguments>) {
     return {};
   } else {
-    if ((!enabled.load(std::memory_order_relaxed) && !override_requested.load(std::memory_order_relaxed)) || context.cmd_list == nullptr
-        || context.cmd_list->get_device()->get_api() != reshade::api::device_api::vulkan) return {};
+    if ((!enabled.load(std::memory_order_relaxed) && !override_requested.load(std::memory_order_relaxed))
+        || context.cmd_list == nullptr) return {};
+    const auto api = context.cmd_list->get_device()->get_api();
+    if (api != reshade::api::device_api::vulkan && api != reshade::api::device_api::d3d11) return {};
+    const auto& hashes = api == reshade::api::device_api::d3d11 ? kDx11Hashes : kVulkanHashes;
     auto* state = renodx::utils::command_action::GetShaderState(&context);
     if (state == nullptr) return {};
     auto& stage = state->stage_states[renodx::utils::shader::COMPUTE_INDEX];
@@ -54,12 +59,14 @@ inline constexpr auto on_dispatch = []<typename Context>(Context& context)
     uint32_t hash = 0;
     renodx::utils::shader::GetPipelineShaderDetails(stage.pipeline, [&](const auto& details) {
       hash = details.compatible_shader_infos[renodx::utils::shader::COMPUTE_INDEX].shader_hash;
-      if (hash != 0x562EDD85u && hash != 0xC465A053u && hash != 0x4187AEA7u) return;
+      if (std::find(hashes.begin(), hashes.end(), hash) == hashes.end()) return;
       layout = details.replacement_layout.handle != 0u ? details.replacement_layout
                : details.injection_layout.handle != 0u ? details.injection_layout : details.layout;
     });
-    if (layout.handle == 0u) return {};
-    const size_t index = hash == 0x562EDD85u ? 0 : hash == 0xC465A053u ? 1 : 2;
+    const auto match = std::find(hashes.begin(), hashes.end(), hash);
+    if (match == hashes.end() || (api == reshade::api::device_api::vulkan && layout.handle == 0u)) return {};
+    // DX11 has no native pipeline layout; zero is a valid cache key.
+    const size_t index = static_cast<size_t>(match - hashes.begin());
     const bool improved = index != 0;
     if (!(improved ? override_requested : enabled).load(std::memory_order_relaxed)) return {};
     const std::lock_guard lock(mutex);
@@ -68,24 +75,31 @@ inline constexpr auto on_dispatch = []<typename Context>(Context& context)
     if (pipeline.handle == 0u) {
       if (improved) device_pipelines.override_active = false;
       std::vector<uint32_t> patched;
+      size_t source_size = 0;
       if (index == 2) {
         // Runtime map contains the base addon's Improved SSR replacement.
         // Never mutate it: Off must leave RenoDX/DevKit in control.
         renodx::utils::shader::shared.data->runtime_replacements.if_contains(
             {context.cmd_list->get_device(), hash}, [&](const auto& replacement) {
-              patched = PatchImprovedBlend(replacement.second);
+              source_size = replacement.second.size();
+              patched = api == reshade::api::device_api::d3d11
+                            ? PrepareDx11Shader(index, replacement.second) : PatchImprovedBlend(replacement.second);
             });
         if (patched.empty()) {
           renodx::utils::shader::shared.data->compile_time_replacements.if_contains(
               {context.cmd_list->get_device(), hash}, [&](const auto& replacement) {
-                patched = PatchImprovedBlend(replacement.second);
+                source_size = (std::max)(source_size, replacement.second.size());
+                patched = api == reshade::api::device_api::d3d11
+                            ? PrepareDx11Shader(index, replacement.second) : PatchImprovedBlend(replacement.second);
               });
         }
       } else renodx::utils::shader::GetPipelineShaderDetails(stage.pipeline, [&](const auto& details) {
         const auto& info = details.compatible_shader_infos[renodx::utils::shader::COMPUTE_INDEX];
         if (info.index >= details.subobjects.size()) return;
         if (auto original = renodx::utils::shader::GetShaderData(details, info)) {
-          patched = improved ? PatchImprovedBlur(*original) : PatchFullResolutionResolve(*original);
+          source_size = original->size();
+          patched = api == reshade::api::device_api::d3d11 ? PrepareDx11Shader(index, *original)
+                    : improved ? PatchImprovedBlur(*original) : PatchFullResolutionResolve(*original);
         }
       });
       reshade::api::shader_desc shader = {};
@@ -98,9 +112,14 @@ inline constexpr auto on_dispatch = []<typename Context>(Context& context)
         (improved ? override_requested : enabled).store(false, std::memory_order_relaxed);
         (improved ? override_failed : failed).store(true, std::memory_order_relaxed);
         device_pipelines.override_active = false;
-        reshade::log::message(reshade::log::level::error, improved
-            ? "Endfield SSR: Improved SSR override unavailable or unsupported base shader; keeping base pair. Restart without live shader overrides."
-            : "Endfield SSR: full-resolution alignment unavailable; using original resolve.");
+        std::ostringstream message;
+        message << "Endfield SSR: " << (improved ? "Improved SSR override" : "full-resolution alignment")
+                << " unavailable for shader 0x" << std::hex << hash << ": "
+                << (source_size == 0 ? "shader bytecode missing"
+                    : patched.empty() ? "required instruction pattern not found or ambiguous"
+                                      : "compute pipeline creation failed")
+                << "; keeping base shader(s).";
+        reshade::log::message(reshade::log::level::error, message.str().c_str());
         return {};
       }
     }
@@ -109,8 +128,12 @@ inline constexpr auto on_dispatch = []<typename Context>(Context& context)
     context.cmd_list->bind_pipeline(reshade::api::pipeline_stage::all_compute, pipeline);
     if (!(improved ? override_logged : logged).exchange(true, std::memory_order_relaxed)) {
       reshade::log::message(reshade::log::level::info, improved
-          ? "Endfield SSR: paired Improved SSR override active (C465A053 + 4187AEA7); requires base Improved SSR On."
-          : "Endfield SSR: resolution-aware hit-UV alignment active for 562EDD85.");
+          ? (api == reshade::api::device_api::d3d11
+                 ? "Endfield SSR: DX11 paired Improved SSR override active (DA42CB07 + 4ED659BE); requires base Improved SSR On."
+                 : "Endfield SSR: Vulkan paired Improved SSR override active (C465A053 + 4187AEA7); requires base Improved SSR On.")
+          : (api == reshade::api::device_api::d3d11
+                 ? "Endfield SSR: DX11 resolution-aware hit-UV alignment active for 18BD6E91."
+                 : "Endfield SSR: Vulkan resolution-aware hit-UV alignment active for 562EDD85."));
     }
     return {
         .post_callback = [](Context& completed, const void*) {
@@ -170,22 +193,24 @@ inline void OnPresent(bool full_resolution, bool improved_override = false) {
   if (registered) return;
   // All addons have registered their shaders by the first present. Run after
   // base shader injection so it cannot replace our private resolve afterward.
-  renodx::utils::command_action::Register(on_dispatch, {
-      .shader_hash = 0x562EDD85u,
-      .command_types = renodx::utils::command_action::COMMAND_TYPE_DISPATCH});
-  renodx::utils::command_action::Register(on_dispatch, {
-      .shader_hash = 0xC465A053u,
-      .command_types = renodx::utils::command_action::COMMAND_TYPE_DISPATCH});
-  renodx::utils::command_action::Register(on_dispatch, {
-      .shader_hash = 0x4187AEA7u,
-      .command_types = renodx::utils::command_action::COMMAND_TYPE_DISPATCH});
+  for (const auto& hashes : {kVulkanHashes, kDx11Hashes}) {
+    for (const auto hash : hashes) {
+      renodx::utils::command_action::Register(on_dispatch, {
+          .shader_hash = hash,
+          .command_types = renodx::utils::command_action::COMMAND_TYPE_DISPATCH});
+    }
+  }
   renodx::utils::command_action::Use(DLL_PROCESS_ATTACH);
   registered = true;
 }
 
 inline void Use(DWORD reason) {
   if (reason == DLL_PROCESS_ATTACH) {
+    // GetShaderData needs retained pipeline bytecode in Release too. Do not
+    // depend on DevKit (or another addon) enabling this shared cache for us.
+    renodx::utils::shader::use_shader_cache = true;
     renodx::utils::shader::Use(reason);
+    renodx::utils::shader::shared.data->use_shader_cache = true;
     renodx::utils::command_action::Use(reason);
     reshade::register_event<reshade::addon_event::destroy_pipeline_layout>(OnDestroyLayout);
     reshade::register_event<reshade::addon_event::destroy_device>(OnDestroyDevice);

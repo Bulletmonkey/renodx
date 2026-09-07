@@ -366,10 +366,9 @@ inline void HookedRenderSsr(
 inline bool ValidateNativeSsrRouter(
     HMODULE unity_player,
     const void* method_pointer) {
-  constexpr DWORD kSupportedGameTimestamp = 0x6A858DB7;
-  constexpr DWORD kSupportedGameImageSize = 0x00CC000;
   constexpr DWORD kSupportedAssemblyTimestamp = 0x6A85914F;
   constexpr DWORD kSupportedAssemblyImageSize = 0x0208B000;
+  constexpr DWORD kSupportedCnAssemblyImageSize = 0x0208A000;
   constexpr uint8_t kExpectedPrologue[] = {
       0x40, 0x53, 0x48, 0x83, 0xEC, 0x30, 0x80, 0x7C,
       0x24, 0x68, 0x00, 0x4C, 0x8B, 0xDA, 0x48, 0x8B,
@@ -395,14 +394,17 @@ inline bool ValidateNativeSsrRouter(
              && module_nt->FileHeader.TimeDateStamp == timestamp
              && module_nt->OptionalHeader.SizeOfImage == image_size;
     };
+    // The hook depends on UnityPlayer, not the regional launcher executable.
+    // CN protection packaging changes SizeOfImage; all target bytes below
+    // were verified in both clients (tests/cn_compatibility_evidence.md).
     if (!has_identity(
-            GetModuleHandleW(nullptr),
-            kSupportedGameTimestamp,
-            kSupportedGameImageSize)
-        || !has_identity(
             unity_player,
             kSupportedAssemblyTimestamp,
-            kSupportedAssemblyImageSize)) {
+            kSupportedAssemblyImageSize)
+        && !has_identity(
+            unity_player,
+            kSupportedAssemblyTimestamp,
+            kSupportedCnAssemblyImageSize)) {
       return false;
     }
 
