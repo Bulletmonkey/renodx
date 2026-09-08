@@ -12,6 +12,10 @@
 #include "./enhancer.hpp"
 #include "./uncensor.hpp"
 #include "./lod.hpp"
+#include "./npc_distance.hpp"
+#include "./npc_loading.hpp"
+#include "./npc_offcamera.hpp"
+#include "./world_distance.hpp"
 #include "./ssr_resolve.hpp"
 #include "./runtime_status.hpp"
 #include "./vulkan_loader_api.hpp"
@@ -115,6 +119,15 @@ bool IsEndfieldProcess() {
              process_name == nullptr ? process_path : process_name + 1,
              L"Endfield.exe")
          == 0;
+}
+
+float SnapEntityDistance(float value) {
+  return std::isfinite(value) ? std::clamp(std::round(value * 2.f) * 0.5f, 1.f, 10.f) : 2.f;
+}
+
+void SnapEntityDistanceSetting(const char* key) {
+  auto* setting = renodx::utils::settings::FindSetting(key);
+  if (setting) setting->Set(std::clamp(SnapEntityDistance(setting->GetValue()), setting->min, setting->max));
 }
 
 renodx::utils::settings::Settings settings = {
@@ -334,6 +347,333 @@ renodx::utils::settings::Settings settings = {
         .tint = kVisualTint,
     },
     new renodx::utils::settings::Setting{
+        .key = "NPCModelLimitOverride",
+        .binding = &endfield::npc_distance::limit_enabled,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Override NPC Model Limit",
+        .section = "Entity Distance",
+        .tooltip = "Off restores the game's values.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCModelLimit",
+        .binding = &endfield::npc_distance::model_limit,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 100.f,
+        .label = "NPC Model Limit",
+        .section = "Entity Distance",
+        .tooltip = "Sets the maximum number of active NPC models.",
+        .tint = kVisualTint,
+        .min = 50.f, .max = endfield::npc_distance::kMaxModelLimit, .format = "%d",
+        .is_enabled = [] { return endfield::npc_distance::limit_enabled >= 0.5f && !endfield::npc_distance::unavailable; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCModelDistanceOverride",
+        .binding = &endfield::npc_distance::regular_enabled,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Override NPC Model Distance",
+        .section = "Entity Distance",
+        .tooltip = "Off restores the game's values.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCModelDistance",
+        .binding = &endfield::npc_distance::regular_multiplier,
+        .default_value = 2.f,
+        .label = "NPC Model Distance",
+        .section = "Entity Distance",
+        .tooltip = "Adjusts how far NPC models remain loaded.",
+        .tint = kVisualTint,
+        .min = 1.f, .max = endfield::npc_distance::kMaxDistanceMultiplier, .format = "%.1fx",
+        .is_enabled = [] { return endfield::npc_distance::regular_enabled >= 0.5f && !endfield::npc_distance::unavailable; },
+
+        .parse = SnapEntityDistance,
+        .on_change = [] { SnapEntityDistanceSetting("NPCModelDistance"); },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "AmbientNPCModelDistanceOverride",
+        .binding = &endfield::npc_distance::ambient_enabled,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Override Ambient NPC Distance",
+        .section = "Entity Distance",
+        .tooltip = "Off restores the game's values.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+    },
+    new renodx::utils::settings::Setting{
+        .key = "AmbientNPCModelDistance",
+        .binding = &endfield::npc_distance::ambient_multiplier,
+        .default_value = 2.f,
+        .label = "Ambient NPC Distance",
+        .section = "Entity Distance",
+        .tooltip = "Adjusts the loading distance for background crowds.",
+        .tint = kVisualTint,
+        .min = 1.f, .max = endfield::npc_distance::kMaxDistanceMultiplier, .format = "%.1fx",
+        .is_enabled = [] { return endfield::npc_distance::ambient_enabled >= 0.5f && !endfield::npc_distance::unavailable; },
+
+        .parse = SnapEntityDistance,
+        .on_change = [] { SnapEntityDistanceSetting("AmbientNPCModelDistance"); },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "EnemyLoadDistanceOverride",
+        .binding = &endfield::world_distance::enemies_enabled,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Override Enemy Load Distance",
+        .section = "Entity Distance",
+        .tooltip = "Off restores the game's values.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+    },
+    new renodx::utils::settings::Setting{
+        .key = "EnemyLoadDistance",
+        .binding = &endfield::world_distance::enemies_multiplier,
+        .default_value = 2.f,
+        .label = "Enemy Load Distance",
+        .section = "Entity Distance",
+        .tooltip = "Adjusts how far enemies remain loaded.",
+        .tint = kVisualTint,
+        .min = 1.f, .max = 10.f, .format = "%.1fx",
+        .is_enabled = [] { return endfield::world_distance::enemies_enabled >= 0.5f && !endfield::world_distance::unavailable; },
+
+        .parse = SnapEntityDistance,
+        .on_change = [] { SnapEntityDistanceSetting("EnemyLoadDistance"); },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "InteractiveLoadDistanceOverride",
+        .binding = &endfield::world_distance::interactive_enabled,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Override Interactive Entity Load Distance",
+        .section = "Entity Distance",
+        .tooltip = "Off restores the game's values.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+    },
+    new renodx::utils::settings::Setting{
+        .key = "InteractiveLoadDistance",
+        .binding = &endfield::world_distance::interactive_multiplier,
+        .default_value = 2.f,
+        .label = "Interactive Entity Load Distance",
+        .section = "Entity Distance",
+        .tooltip = "Adjusts the loading distance for interactive objects, such as teleporters.",
+        .tint = kVisualTint,
+        .min = 1.f, .max = 10.f, .format = "%.1fx",
+        .is_enabled = [] { return endfield::world_distance::interactive_enabled >= 0.5f && !endfield::world_distance::unavailable; },
+
+        .parse = SnapEntityDistance,
+        .on_change = [] { SnapEntityDistanceSetting("InteractiveLoadDistance"); },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "Entity distance unavailable; check ReShade.log.",
+        .section = "Entity Distance",
+        .is_visible = [] { return endfield::world_distance::unavailable; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "NPC distance controls unavailable; check ReShade.log for details.",
+        .section = "Entity Distance",
+        .is_visible = [] { return endfield::npc_distance::unavailable; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCOffCameraUnload",
+        .binding = &endfield::npc_offcamera::enabled,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.0f,
+        .label = "Unload Off-camera Crowds",
+        .section = "Off-camera Entities (Experimental)",
+        .tooltip = "Unloads background crowds outside the camera view.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+        .min = 0.0f, .max = 1.0f, .format = "%d",
+        .is_enabled = [] { return !endfield::npc_offcamera::unavailable; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCOffCameraOrdinary",
+        .binding = &endfield::npc_offcamera::npcs_enabled,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.0f,
+        .label = "Unload Off-camera NPC Models",
+        .section = "Off-camera Entities (Experimental)",
+        .tooltip = "Unloads ordinary NPC models outside the camera view.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+        .min = 0.0f, .max = 1.0f, .format = "%d",
+        .is_enabled = [] { return !endfield::npc_offcamera::unavailable; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCReloadOrder",
+        .binding = &endfield::npc_offcamera::closest_first,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 1.0f,
+        .label = "Crowd Loading Priority",
+        .section = "Off-camera Entities (Experimental)",
+        .tooltip = "Prioritizes nearby crowds and shares work between unfinished loads.",
+        .labels = {"Default", "Closest First"},
+        .tint = kVisualTint,
+        .min = 0.0f, .max = 1.0f, .format = "%d",
+        .is_enabled = [] { return !endfield::npc_offcamera::unavailable && endfield::npc_offcamera::enabled >= 0.5f; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCOffCameraRefresh",
+        .binding = &endfield::npc_offcamera::refresh_interval,
+        .value_type = renodx::utils::settings::SettingValueType::FLOAT,
+        .default_value = 0.1f,
+        .label = "View Recheck Interval",
+        .section = "Off-camera Entities (Experimental)",
+        .tooltip = "Lower values let NPC models respond to camera turns sooner.",
+        .tint = kVisualTint,
+        .min = 0.05f, .max = 1.0f, .format = "%.2f s",
+        .is_enabled = [] { return !endfield::npc_offcamera::unavailable; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCOffCameraDelay",
+        .binding = &endfield::npc_offcamera::delay,
+        .value_type = renodx::utils::settings::SettingValueType::FLOAT,
+        .default_value = 2.0f,
+        .label = "Unload Delay",
+        .section = "Off-camera Entities (Experimental)",
+        .tooltip = "Seconds outside the view before unloading.",
+        .tint = kVisualTint,
+        .min = 0.5f, .max = 10.0f, .format = "%.1f s",
+        .is_enabled = [] { return !endfield::npc_offcamera::unavailable && (endfield::npc_offcamera::enabled >= 0.5f || endfield::npc_offcamera::npcs_enabled >= 0.5f); },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCOffCameraMargin",
+        .binding = &endfield::npc_offcamera::margin,
+        .value_type = renodx::utils::settings::SettingValueType::FLOAT,
+        .default_value = 25.0f,
+        .label = "View Margin",
+        .section = "Off-camera Entities (Experimental)",
+        .tooltip = "Extra space around the view for earlier loading.",
+        .tint = kVisualTint,
+        .min = 0.0f, .max = 100.0f, .format = "%.0f%%",
+        .is_enabled = [] { return !endfield::npc_offcamera::unavailable && (endfield::npc_offcamera::enabled >= 0.5f || endfield::npc_offcamera::npcs_enabled >= 0.5f); },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCOffCameraProtection",
+        .binding = &endfield::npc_offcamera::protection,
+        .value_type = renodx::utils::settings::SettingValueType::FLOAT,
+        .default_value = 15.0f,
+        .label = "Nearby Protection",
+        .section = "Off-camera Entities (Experimental)",
+        .tooltip = "Keeps nearby entities loaded in every direction.",
+        .tint = kVisualTint,
+        .min = 5.0f, .max = 100.0f, .format = "%.0f m",
+        .is_enabled = [] { return !endfield::npc_offcamera::unavailable && (endfield::npc_offcamera::enabled >= 0.5f || endfield::npc_offcamera::npcs_enabled >= 0.5f); },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "Off-camera entities unavailable; check ReShade.log.",
+        .section = "Off-camera Entities (Experimental)",
+        .is_visible = [] { return endfield::npc_offcamera::unavailable; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCCameraCulling",
+        .binding = &endfield::npc_loading::culling_mode,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.0f,
+        .label = "Override NPC Culling",
+        .section = "NPC Culling",
+        .tooltip = "Controls animation culling for off-camera and obscured NPCs.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+        .min = 0.0f, .max = 1.0f, .format = "%d",
+        .is_enabled = [] { return !endfield::npc_loading::unavailable; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCCullingStartLOD",
+        .binding = &endfield::npc_loading::culling_start_lod,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.0f,
+        .label = "Culling Starts at LOD",
+        .section = "NPC Culling",
+        .tooltip = "LOD 0 includes the highest-detail NPCs.",
+        .labels = {"LOD 0 (All)", "LOD 1", "LOD 2", "LOD 3", "LOD 4"},
+        .tint = kVisualTint,
+        .min = 0.0f, .max = 4.0f, .format = "%d",
+        .is_enabled = [] { return !endfield::npc_loading::unavailable && endfield::npc_loading::culling_mode == 1.f; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCCullingUpdateInterval",
+        .binding = &endfield::npc_loading::update_interval,
+        .value_type = renodx::utils::settings::SettingValueType::FLOAT,
+        .default_value = 0.25f,
+        .label = "LOD Check Interval",
+        .section = "NPC Culling",
+        .tooltip = "Seconds between visibility and LOD checks. Lower values respond faster.",
+        .tint = kVisualTint,
+        .min = 0.05f, .max = 2.0f, .format = "%.2f s",
+        .is_enabled = [] { return !endfield::npc_loading::unavailable && endfield::npc_loading::culling_mode == 1.f; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCLoadingOverride",
+        .binding = &endfield::npc_loading::loading_override,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.0f,
+        .label = "Override NPC Loading",
+        .section = "NPC Loading",
+        .tooltip = "Adjusts how quickly background NPCs load.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+        .min = 0.0f, .max = 1.0f, .format = "%d",
+        .is_enabled = [] { return !endfield::npc_loading::unavailable; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCCreatePerFrame",
+        .binding = &endfield::npc_loading::create_per_frame,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 1.0f,
+        .label = "New NPCs per Frame",
+        .section = "NPC Loading",
+        .tooltip = "Maximum NPC creations started each frame.",
+        .tint = kVisualTint,
+        .min = 1.0f, .max = 8.0f, .format = "%d",
+        .is_enabled = [] { return !endfield::npc_loading::unavailable && endfield::npc_loading::loading_override >= 0.5f; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCCreateStepsPerFrame",
+        .binding = &endfield::npc_loading::steps_per_frame,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 2.0f,
+        .label = "Loading Steps per Frame",
+        .section = "NPC Loading",
+        .tooltip = "Maximum NPC loading steps processed each frame.",
+        .tint = kVisualTint,
+        .min = 1.0f, .max = 32.0f, .format = "%d",
+        .is_enabled = [] { return !endfield::npc_loading::unavailable && endfield::npc_loading::loading_override >= 0.5f; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCCreateWorkBudget",
+        .binding = &endfield::npc_loading::work_budget_ms,
+        .value_type = renodx::utils::settings::SettingValueType::FLOAT,
+        .default_value = 1.0f,
+        .label = "Loading Time Budget",
+        .section = "NPC Loading",
+        .tooltip = "Maximum frame time spent creating NPCs.",
+        .tint = kVisualTint,
+        .min = 0.25f, .max = 5.0f, .format = "%.2f ms",
+        .is_enabled = [] { return !endfield::npc_loading::unavailable && endfield::npc_loading::loading_override >= 0.5f; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "NPCRetentionBonus",
+        .binding = &endfield::npc_loading::retention_bonus,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 200.0f,
+        .label = "Loaded NPC Priority",
+        .section = "NPC Loading",
+        .tooltip = "Higher values favor keeping already-loaded NPCs.",
+        .tint = kVisualTint,
+        .min = 0.0f, .max = 1000.0f, .format = "%d",
+        .is_enabled = [] { return !endfield::npc_loading::unavailable && endfield::npc_loading::loading_override >= 0.5f; },
+    },
+    new renodx::utils::settings::Setting{
         .key = "Uncensor",
         .binding = &endfield::uncensor::enabled,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
@@ -408,6 +748,10 @@ void OnPresent(
           && HasSsrBaseAddon(swapchain->get_device()->get_api()));
   endfield::hdr_output::OnPresent(swapchain);
   endfield::lod::OnPresent();
+  endfield::npc_distance::OnPresent();
+  endfield::npc_offcamera::OnPresent();
+  endfield::npc_loading::OnPresent();
+  endfield::world_distance::OnPresent();
 
   uint32_t delay = limiter_resume_delay.load(std::memory_order_relaxed);
   if (delay != 0) {
@@ -458,6 +802,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
       reshade::unregister_event<reshade::addon_event::create_device>(OnCreateDevice);
       reshade::unregister_event<reshade::addon_event::copy_resource>(endfield::hdr_output::OnPresentationCopy);
       reshade::unregister_event<reshade::addon_event::copy_texture_region>(endfield::hdr_output::OnPresentationCopyRegion);
+      endfield::world_distance::Shutdown();
+      endfield::npc_offcamera::Shutdown();
+      endfield::npc_loading::Shutdown();
+      endfield::npc_distance::Shutdown();
       endfield::lod::Shutdown();
       endfield::enhancer::Shutdown();
       endfield::uncensor::Shutdown();

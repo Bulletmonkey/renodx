@@ -1,0 +1,237 @@
+#pragma once
+
+#include <Windows.h>
+#include <algorithm>
+#include <bit>
+#include <cmath>
+#include <wincrypt.h>
+#pragma comment(lib, "crypt32.lib")
+#include "./enhancer.hpp"
+
+namespace endfield::npc_distance {
+inline float regular_enabled = 0.f, ambient_enabled = 0.f, limit_enabled = 0.f;
+inline float regular_multiplier = 2.f, ambient_multiplier = 2.f, model_limit = 100.f;
+inline constexpr float kMaxDistanceMultiplier = 10.f;
+inline constexpr float kMaxModelLimit = 500.f;
+inline bool unavailable = false;
+namespace detail {
+using namespace enhancer::detail;
+struct Distances { float load, unload; };
+static_assert(sizeof(Distances) == 8);
+
+// Compare/exchange preserves a newer game-authored value during updates and rollback.
+template <typename T>
+struct Override {
+  using Bits = std::conditional_t<sizeof(T) == 1, char, std::conditional_t<sizeof(T) == 8, LONG64, LONG>>;
+  Bits* address = nullptr;
+  Bits original{}, replacement{};
+  bool owned = false;
+  Bits Exchange(Bits desired, Bits expected) {
+    if constexpr (sizeof(T) == 1) return _InterlockedCompareExchange8(address, desired, expected);
+    else if constexpr (sizeof(T) == 8) return InterlockedCompareExchange64(address, desired, expected);
+    else return InterlockedCompareExchange(address, desired, expected);
+  }
+  template <typename Transform>
+  bool Update(bool enabled, Transform transform) {
+    if (!address) return !enabled;
+    const Bits current = Exchange(0, 0);
+    if (owned && current != replacement) owned = false;
+    if (!enabled) {
+      if (owned) Exchange(original, replacement);
+      owned = false;
+      return true;
+    }
+    const T baseline = std::bit_cast<T>(owned ? original : current);
+    T desired = baseline;
+    if (!transform(&desired)) {
+      if (owned) Exchange(original, replacement);
+      owned = false;
+      return false;
+    }
+    const Bits next = std::bit_cast<Bits>(desired);
+    if (next == current) return true;
+    if (Exchange(next, current) != current) return true; // A game write won; retry next frame.
+    if (!owned) original = current;
+    replacement = next;
+    owned = true;
+    return true;
+  }
+};
+inline Override<Distances> regular, ambient, ambient_cpu, ambient_gpu;
+inline Override<float> ambient_search;
+inline Override<int> limit, ambient_limit;
+inline bool ready = false, attempted = false;
+inline float last_regular = -1.f, last_ambient = -1.f, last_limit = -1.f;
+
+inline bool ScaleDistances(Distances* value, float multiplier) {
+  if (!std::isfinite(value->load) || !std::isfinite(value->unload)
+      || value->load <= 0.f || value->unload <= value->load || value->unload > 10000.f) return false;
+  multiplier = std::isfinite(multiplier) ? std::clamp(multiplier, 1.f, kMaxDistanceMultiplier) : 1.f;
+  value->load *= multiplier;
+  value->unload *= multiplier;
+  return true;
+}
+inline bool ScaleRadius(float* value, float multiplier) {
+  if (!std::isfinite(*value) || *value <= 0.f || *value > 10000.f) return false;
+  *value *= std::isfinite(multiplier) ? std::clamp(multiplier, 1.f, kMaxDistanceMultiplier) : 1.f;
+  return true;
+}
+inline bool SetLimit(int* value, float requested) {
+  if (*value <= 0 || *value > 10000) return false;
+  *value = std::isfinite(requested) ? static_cast<int>(std::clamp(requested, 50.f, kMaxModelLimit)) : *value;
+  return true;
+}
+
+inline bool SupportedBuild() {
+  wchar_t path[MAX_PATH]{};
+  if (!GetModuleFileNameW(GetModuleHandleW(L"GameAssembly.dll"), path, MAX_PATH)) return false;
+  HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) return false;
+  LARGE_INTEGER size{};
+  HANDLE mapping = GetFileSizeEx(file, &size) && size.QuadPart > 0 && size.QuadPart <= MAXDWORD
+      ? CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr) : nullptr;
+  const auto* bytes = mapping ? static_cast<const BYTE*>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0)) : nullptr;
+  std::array<BYTE, 32> hash{};
+  DWORD length = static_cast<DWORD>(hash.size());
+  const bool hashed = bytes && CryptHashCertificate2(L"SHA256", 0, nullptr, bytes,
+      static_cast<DWORD>(size.QuadPart), hash.data(), &length);
+  if (bytes) UnmapViewOfFile(bytes);
+  if (mapping) CloseHandle(mapping);
+  CloseHandle(file);
+  constexpr std::array<BYTE, 32> expected = {0x59,0x3d,0x0b,0x90,0x5f,0x79,0x3e,0x6b,0xeb,0xd2,0x5e,0xc3,0x43,0x2a,0xf3,0xf7,0xff,0x0f,0x4f,0x0c,0x24,0x39,0x9e,0xc4,0x9c,0x3d,0xdb,0xb1,0x29,0xbd,0xc8,0x6c};
+  return hashed && length == expected.size() && hash == expected;
+}
+
+inline bool Resolve() {
+  if (!SupportedBuild()) return false;
+  auto image = FindImage("Gameplay.Beyond.dll");
+  auto core = FindImage("UnityEngine.CoreModule");
+  if (!image || !core) return false;
+  auto type = class_from_name(image, "Beyond.NPC.Lod", "NPCCrowdLODSetting");
+  auto vector_type = class_from_name(core, "UnityEngine", "Vector2");
+  if (!type || !vector_type) return false;
+  void* (*field_type)(void*) = nullptr;
+  int (*type_kind)(void*) = nullptr;
+  int (*field_flags)(void*) = nullptr;
+  void* (*type_class)(void*) = nullptr;
+  void* (*static_data)(void*) = nullptr;
+  void (*class_init)(void*) = nullptr;
+  HMODULE module = GetModuleHandleW(L"GameAssembly.dll");
+  if (!ResolveExport(module, "il2cpp_field_get_type", &field_type)
+      || !ResolveExport(module, "il2cpp_type_get_type", &type_kind)
+      || !ResolveExport(module, "il2cpp_field_get_flags", &field_flags)
+      || !ResolveExport(module, "il2cpp_class_from_il2cpp_type", &type_class)
+      || !ResolveExport(module, "il2cpp_class_get_static_field_data", &static_data)
+      || !ResolveExport(module, "il2cpp_runtime_class_init", &class_init)) return false;
+  constexpr const char* names[] = {"s_visibleModelDistance", "s_visibileAtmosphericModelDistance", "s_maxNPCRenderNum"};
+  constexpr size_t offsets[] = {0, 8, 0x1c}; // Verified consumers and initializer for the exact build above.
+  for (size_t i = 0; i < 3; ++i) {
+    void* field = class_get_field_from_name(type, names[i]);
+    if (!field || !(field_flags(field) & 0x10) || (field_flags(field) & 0x40)
+        || field_get_offset(field) != offsets[i]) {
+      Log(reshade::log::level::warning, names[i]);
+      return false;
+    }
+    void* field_value_type = field_type(field);
+    if (i < 2 ? type_kind(field_value_type) != 0x11 || type_class(field_value_type) != vector_type
+              : type_kind(field_value_type) != 0x08) {
+      Log(reshade::log::level::warning, names[i]);
+      return false;
+    }
+  }
+  class_init(type);
+  auto* data = static_cast<uint8_t*>(static_data(type));
+  if (!data || reinterpret_cast<uintptr_t>(data) % 8 != 0) return false;
+  auto ambient_type = class_from_name(image, "Beyond.Gameplay.Core", "AtmosphereNpcAoiSetting");
+  if (!ambient_type) return false;
+  constexpr const char* ambient_names[] = {"s_cpuLayerInner", "s_cpuLayerOuter", "s_gpuLayerInner", "s_gpuLayerOuter", "s_searchRadius", "s_maxAtmosphereCpuNpcCount"};
+  for (size_t i = 0; i < std::size(ambient_names); ++i) {
+    void* field = class_get_field_from_name(ambient_type, ambient_names[i]);
+    if (!field || !(field_flags(field) & 0x10) || (field_flags(field) & 0x40)
+        || field_get_offset(field) != 0x10 + i * 4 || type_kind(field_type(field)) != (i < 5 ? 0x0c : 0x08)) {
+      Log(reshade::log::level::warning, ambient_names[i]);
+      return false;
+    }
+  }
+  class_init(ambient_type);
+  auto* ambient_data = static_cast<uint8_t*>(static_data(ambient_type));
+  if (!ambient_data || reinterpret_cast<uintptr_t>(ambient_data) % 8 != 0) return false;
+  ambient_cpu.address = reinterpret_cast<LONG64*>(ambient_data + 0x10);
+  ambient_gpu.address = reinterpret_cast<LONG64*>(ambient_data + 0x18);
+  ambient_search.address = reinterpret_cast<LONG*>(ambient_data + 0x20);
+  ambient_limit.address = reinterpret_cast<LONG*>(ambient_data + 0x24);
+  regular.address = reinterpret_cast<LONG64*>(data);
+  ambient.address = reinterpret_cast<LONG64*>(data + 8);
+  limit.address = reinterpret_cast<LONG*>(data + 0x1c);
+  return true;
+}
+inline bool Apply(bool restore = false) {
+  const bool regular_ok = regular.Update(!restore && regular_enabled >= 0.5f,
+      [](Distances* value) { return ScaleDistances(value, regular_multiplier); });
+  const bool ambient_ok = ambient.Update(!restore && ambient_enabled >= 0.5f,
+      [](Distances* value) { return ScaleDistances(value, ambient_multiplier); });
+  const bool limit_ok = limit.Update(!restore && limit_enabled >= 0.5f,
+      [](int* value) { return SetLimit(value, model_limit); });
+  // The promotion budget is the minimum of the shared cap and this separate ceiling.
+  const bool ambient_limit_ok = ambient_limit.Update(!restore && limit_enabled >= 0.5f,
+      [](int* value) { return SetLimit(value, model_limit); });
+  const bool cpu_ok = ambient_cpu.Update(!restore && ambient_enabled >= 0.5f,
+      [](Distances* value) { return ScaleDistances(value, ambient_multiplier); });
+  const bool gpu_ok = ambient_gpu.Update(!restore && ambient_enabled >= 0.5f,
+      [](Distances* value) { return ScaleDistances(value, ambient_multiplier); });
+  const bool search_ok = ambient_search.Update(!restore && ambient_enabled >= 0.5f,
+      [](float* value) { return ScaleRadius(value, ambient_multiplier); });
+  return regular_ok && ambient_ok && limit_ok && ambient_limit_ok && cpu_ok && gpu_ok && search_ok;
+}
+} // namespace detail
+
+inline void OnPresent() {
+  using namespace detail;
+  if (unavailable) return;
+  if (!ready) {
+    if (regular_enabled < 0.5f && ambient_enabled < 0.5f && limit_enabled < 0.5f) return;
+    if (!enhancer::detail::ResolveApi()) return;
+    if (attempted) return;
+    attempted = true;
+    __try { ready = Resolve(); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { ready = false; }
+    if (!ready) {
+      unavailable = true;
+      Log(reshade::log::level::warning, "Endfield enhancer: NPC distance controls refused: unsupported build or static field layout.");
+      return;
+    }
+    Log(reshade::log::level::info, "Endfield enhancer: resolved local NPC model distances, ambient CPU/GPU bands, search radius and model count cap.");
+  }
+  bool ok = false;
+  __try { ok = Apply(); }
+  __except (EXCEPTION_EXECUTE_HANDLER) { ok = false; }
+  if (!ok) {
+    __try { Apply(true); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    unavailable = true;
+    Log(reshade::log::level::warning, "Endfield enhancer: NPC controls disabled after invalid values or memory access; rollback attempted.");
+    return;
+  }
+  const float r = regular_enabled >= 0.5f ? regular_multiplier : 0.f;
+  const float a = ambient_enabled >= 0.5f ? ambient_multiplier : 0.f;
+  const float n = limit_enabled >= 0.5f ? model_limit : 0.f;
+  if (r != last_regular || a != last_ambient || n != last_limit) {
+    char message[384];
+    const auto regular_values = std::bit_cast<Distances>(regular.Exchange(0, 0));
+    const auto ambient_values = std::bit_cast<Distances>(ambient.Exchange(0, 0));
+    std::snprintf(message, sizeof(message), "Endfield enhancer: NPC settings readback: regular=%.2f/%.2f, ambient=%.2f/%.2f, cap=%ld ambient_cap=%ld (load/unload; field values, not visual validation).",
+        regular_values.load, regular_values.unload, ambient_values.load, ambient_values.unload, limit.Exchange(0, 0), ambient_limit.Exchange(0, 0));
+    Log(reshade::log::level::info, message);
+    const auto cpu_values = std::bit_cast<Distances>(ambient_cpu.Exchange(0, 0));
+    const auto gpu_values = std::bit_cast<Distances>(ambient_gpu.Exchange(0, 0));
+    std::snprintf(message, sizeof(message), "Endfield enhancer: ambient distance readback: CPU=%.2f/%.2f, GPU=%.2f/%.2f, search=%.2f (inner/outer; visual validation pending).",
+        cpu_values.load, cpu_values.unload, gpu_values.load, gpu_values.unload, std::bit_cast<float>(ambient_search.Exchange(0, 0)));
+    Log(reshade::log::level::info, message);
+    last_regular = r; last_ambient = a; last_limit = n;
+  }
+}
+inline void Shutdown() {
+  if (!detail::ready) return;
+  __try { detail::Apply(true); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+} // namespace endfield::npc_distance
