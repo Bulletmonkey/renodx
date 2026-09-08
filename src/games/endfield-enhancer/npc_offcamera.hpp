@@ -37,7 +37,7 @@ struct Entry {
   int id = 0;
   uint64_t seen = 0, since = 0, checked = 0;
   bool outside = false, denying = false, model_hidden = false;
-  uint64_t transition = 0;
+  uint64_t transition = 0, budget_checked = 0;
 };
 inline thread_local std::unordered_map<uintptr_t, Entry> entries;
 inline thread_local std::unordered_map<uintptr_t, uintptr_t> lod_agents;
@@ -45,7 +45,7 @@ inline std::atomic_uint64_t lod_load_denied{0}, lod_unload_requested{0};
 inline thread_local uint64_t local_generation = 0;
 inline thread_local std::unordered_map<uintptr_t, Entry> model_entries;
 using LodTick = void (*)(void*, float, void*, int, void*);
-inline LodTick lod_tick = nullptr;
+inline LodTick lod_tick = nullptr, downgrade_lod_tick = nullptr;
 using ModelTransition = void (*)(void*, void*);
 inline ModelTransition hide_model = nullptr, show_model = nullptr;
 inline void* (*get_avatar)(void*, void*) = nullptr;
@@ -388,6 +388,134 @@ inline void ApplyModelTransition(void* self) {
     } else ++restore_blocked;
   }
 }
+// A camera-unloaded ordinary NPC must not reserve a model slot or shift the
+// render ranks of the remaining models. Crowd promotion already uses HookedBlocked.
+using LodManagerTick = void (*)(void*, void*, float, void*);
+inline LodManagerTick lod_manager_tick = nullptr;
+inline void* (*get_lod_manager)(void*) = nullptr;
+inline int (*cpu_budget)(void*) = nullptr;
+inline const int* budget_model_cap = nullptr;
+inline const int* budget_crowd_cap = nullptr;
+inline const int* budget_moving_reserve = nullptr;
+inline void** budget_npc_manager = nullptr;
+inline thread_local void* ranking_manager = nullptr;
+inline thread_local void* ranking_list = nullptr;
+inline thread_local int ranking_version = 0;
+inline thread_local std::vector<int> rank_credits, crowd_rank_credits;
+inline thread_local void* ranking_crowd_list = nullptr;
+inline thread_local int ranking_crowd_version = 0;
+inline std::atomic_uint64_t model_rank_reclaimed{0}, crowd_budget_reclaimed{0}, budget_epoch{1};
+
+inline bool ReleasesModelSlot(void* self) {
+  if (!self || failed.load()) return false;
+  auto* bytes = static_cast<uint8_t*>(self);
+  if (bytes[0x3d]) return false;
+  if (bytes[0x4c]) {
+    // Crowds use native AOI/LOD unloading rather than our ordinary-NPC hide owner.
+    const float distance = *reinterpret_cast<float*>(bytes+0x2c);
+    if (!active.load() || !std::isfinite(distance) || distance <= requested_protection.load()
+        || !CameraRejectsLod(self)) return false;
+  } else {
+    if (!npc_active.load()) return false;
+    const auto found = model_entries.find(reinterpret_cast<uintptr_t>(self));
+    if (found == model_entries.end() || !found->second.model_hidden
+        || found->second.data != reinterpret_cast<uintptr_t>(*reinterpret_cast<void**>(bytes+0x20))) return false;
+    // Share fresh projection work between repeated budget queries in a frame.
+    const auto epoch = budget_epoch.load();
+    if (found->second.budget_checked != epoch) {
+      found->second.checked = 0; found->second.budget_checked = epoch;
+    }
+    if (!RejectModel(self)) return false;
+  }
+  void* avatar = get_avatar(self,nullptr);
+  return avatar && !avatar_visible(avatar,nullptr);
+}
+// Reads live manager-owned objects only. No entity references survive the pass.
+inline int BuildRankCredits(void* manager, std::vector<int>* credits, size_t list_offset = 0x20) {
+  auto* list = manager ? *reinterpret_cast<uint8_t**>(static_cast<uint8_t*>(manager)+list_offset) : nullptr;
+  if (!list) return -1;
+  const int count = *reinterpret_cast<int*>(list+0x18);
+  auto* items = *reinterpret_cast<uint8_t**>(list+0x10);
+  if (count < 0 || count > 4096 || (count && (!items || *reinterpret_cast<uintptr_t*>(items+0x18) < static_cast<uintptr_t>(count)))) return -1;
+  const int version = *reinterpret_cast<int*>(list+0x1c);
+  credits->clear(); credits->reserve(count+1); credits->push_back(0);
+  for (int i=0; i<count; ++i) {
+    void* lod = *reinterpret_cast<void**>(items+0x20+i*sizeof(void*));
+    credits->push_back(credits->back() + (ReleasesModelSlot(lod) ? 1 : 0));
+  }
+  if (*reinterpret_cast<int*>(list+0x1c) != version || *reinterpret_cast<int*>(list+0x18) != count) { credits->clear(); return -1; }
+  return count;
+}
+inline int EffectiveModelRank(void* self, int rank) {
+  if (!ranking_manager || rank < 0 || (!npc_active.load() && !active.load()) || failed.load()) return rank;
+  if (rank_credits.empty()) {
+    if (BuildRankCredits(ranking_manager,&rank_credits) < 0) return rank;
+    ranking_list = *reinterpret_cast<void**>(static_cast<uint8_t*>(ranking_manager)+0x20);
+    ranking_version = *reinterpret_cast<int*>(static_cast<uint8_t*>(ranking_list)+0x1c);
+  }
+  auto* list = *reinterpret_cast<uint8_t**>(static_cast<uint8_t*>(ranking_manager)+0x20);
+  if (list != ranking_list || *reinterpret_cast<int*>(list+0x1c) != ranking_version
+      || *reinterpret_cast<int*>(list+0x18) != static_cast<int>(rank_credits.size())-1) return rank;
+  const int count = static_cast<int>(rank_credits.size())-1;
+  int reclaimed = 0;
+  if (rank < count) {
+    auto* items = *reinterpret_cast<uint8_t**>(list+0x10);
+    if (*reinterpret_cast<void**>(items+0x20+rank*sizeof(void*)) != self) return rank;
+    reclaimed = rank_credits[rank];
+  } else {
+    // This list is sorted later in the native pass: capture it lazily on its first tick.
+    if (crowd_rank_credits.empty()) {
+      if (BuildRankCredits(ranking_manager,&crowd_rank_credits,0x28) < 0) return rank;
+      ranking_crowd_list = *reinterpret_cast<void**>(static_cast<uint8_t*>(ranking_manager)+0x28);
+      ranking_crowd_version = *reinterpret_cast<int*>(static_cast<uint8_t*>(ranking_crowd_list)+0x1c);
+    }
+    auto* crowd_list = *reinterpret_cast<uint8_t**>(static_cast<uint8_t*>(ranking_manager)+0x28);
+    const int index = rank-count;
+    if (crowd_list != ranking_crowd_list || *reinterpret_cast<int*>(crowd_list+0x1c) != ranking_crowd_version
+        || *reinterpret_cast<int*>(crowd_list+0x18) != static_cast<int>(crowd_rank_credits.size())-1
+        || index >= static_cast<int>(crowd_rank_credits.size())-1) return rank;
+    auto* items = *reinterpret_cast<uint8_t**>(crowd_list+0x10);
+    if (*reinterpret_cast<void**>(items+0x20+index*sizeof(void*)) != self) return rank;
+    reclaimed = rank_credits.back()+crowd_rank_credits[index];
+  }
+  if (reclaimed) ++model_rank_reclaimed;
+  return rank-reclaimed;
+}
+inline void HookedDowngradeLodTick(void* self, float delta, void* camera, int rank, void* method) {
+  int effective_rank = rank;
+  __try { if (self) effective_rank = EffectiveModelRank(self,rank); }
+  __except (EXCEPTION_EXECUTE_HANDLER) { ++faults; failed = true; }
+  downgrade_lod_tick(self,delta,camera,effective_rank,method);
+}
+inline void HookedLodManagerTick(void* self, void* all_entities, float delta, void* method) {
+  if ((!npc_active.load() && !active.load()) || failed.load() || ranking_manager) { lod_manager_tick(self,all_entities,delta,method); return; }
+  ranking_manager = self; ranking_list = nullptr; ranking_crowd_list = nullptr; rank_credits.clear(); crowd_rank_credits.clear();
+  __try { lod_manager_tick(self,all_entities,delta,method); }
+  __finally { ranking_manager = nullptr; ranking_list = nullptr; ranking_crowd_list = nullptr; rank_credits.clear(); crowd_rank_credits.clear(); }
+}
+inline int ReclaimCrowdBudget(int original) {
+  void* manager = get_lod_manager(nullptr);
+  std::vector<int> credits;
+  const int regular_count = BuildRankCredits(manager,&credits);
+  if (regular_count < 0 || credits.back() == 0) return original;
+  auto* npc_manager = static_cast<uint8_t*>(*budget_npc_manager);
+  if (!npc_manager) return original;
+  const int cap = *budget_model_cap, crowd_cap = *budget_crowd_cap;
+  const int moving = *budget_moving_reserve, other = *reinterpret_cast<int*>(npc_manager+0xb8);
+  if (cap < 0 || cap > 10000 || crowd_cap < 0 || crowd_cap > 10000 || moving < 0 || moving > 10000 || other < 0 || other > 10000) return original;
+  const int other_capacity = crowd_cap-moving-other;
+  // Preserve native reservations and fail open to the original on formula drift.
+  if (original != std::max(0,std::min(other_capacity,cap-regular_count))) return original;
+  const int result = std::max(0,std::min(other_capacity,cap-(regular_count-credits.back())));
+  if (result > original) ++crowd_budget_reclaimed;
+  return result;
+}
+inline int HookedCpuBudget(void* method) {
+  const int original = cpu_budget(method);
+  if (!npc_active.load() || failed.load()) return original;
+  __try { return ReclaimCrowdBudget(original); }
+  __except (EXCEPTION_EXECUTE_HANDLER) { ++faults; failed = true; return original; }
+}
 inline void HookedLodTick(void* self, float delta, void* camera, int rank, void* method) {
   if (!failed.load() && self) {
     __try {
@@ -405,7 +533,10 @@ inline void HookedLodTick(void* self, float delta, void* camera, int rank, void*
       }
     } __except (EXCEPTION_EXECUTE_HANDLER) { ++faults; failed = true; }
   }
-  lod_tick(self, delta, camera, rank, method);
+  int effective_rank = rank;
+  __try { if (self) effective_rank = EffectiveModelRank(self,rank); }
+  __except (EXCEPTION_EXECUTE_HANDLER) { ++faults; failed = true; }
+  lod_tick(self, delta, camera, effective_rank, method);
   __try { ApplyModelTransition(self); }
   __except (EXCEPTION_EXECUTE_HANDLER) { ++faults; failed = true; }
 }
@@ -439,6 +570,9 @@ inline bool UpdateHooks(bool attach) {
     if (ok) ok = (attach ? DetourAttach(&can_load, HookedCanLoad) : DetourDetach(&can_load, HookedCanLoad)) == NO_ERROR;
     if (ok) ok = (attach ? DetourAttach(&can_unload, HookedCanUnload) : DetourDetach(&can_unload, HookedCanUnload)) == NO_ERROR;
     if (ok) ok = (attach ? DetourAttach(&lod_tick, HookedLodTick) : DetourDetach(&lod_tick, HookedLodTick)) == NO_ERROR;
+    if (ok) ok = (attach ? DetourAttach(&downgrade_lod_tick, HookedDowngradeLodTick) : DetourDetach(&downgrade_lod_tick, HookedDowngradeLodTick)) == NO_ERROR;
+    if (ok) ok = (attach ? DetourAttach(&lod_manager_tick, HookedLodManagerTick) : DetourDetach(&lod_manager_tick, HookedLodManagerTick)) == NO_ERROR;
+    if (ok) ok = (attach ? DetourAttach(&cpu_budget, HookedCpuBudget) : DetourDetach(&cpu_budget, HookedCpuBudget)) == NO_ERROR;
     if (ok) ok = (attach ? DetourAttach(&process_queue, HookedProcessQueue) : DetourDetach(&process_queue, HookedProcessQueue)) == NO_ERROR;
     if (ok) ok = (attach ? DetourAttach(&move_next, HookedMoveNext) : DetourDetach(&move_next, HookedMoveNext)) == NO_ERROR;
     if (ok) ok = (attach ? DetourAttach(&avatar_fade, HookedAvatarFade) : DetourDetach(&avatar_fade, HookedAvatarFade)) == NO_ERROR;
@@ -452,6 +586,18 @@ inline bool Resolve() {
   if (!npc_distance::detail::SupportedBuild()) return false;
   auto module = GetModuleHandleW(L"GameAssembly.dll");
   auto* base = reinterpret_cast<uint8_t*>(module);
+  constexpr uint8_t downgrade_lod_tick_bytes[] = {0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x74,0x24,0x10,0x48,0x89,0x7c,0x24,0x18,0x41,0x54,0x41,0x56,0x41,0x57,0x48,0x83,0xec,0x70,0x0f,0x29,0x74,0x24,0x60,0x41,0x8b,0xf1};
+  if (std::memcmp(base + 0x3064930, downgrade_lod_tick_bytes, sizeof(downgrade_lod_tick_bytes))) return false;
+  downgrade_lod_tick = reinterpret_cast<LodTick>(base + 0x3064930);
+  constexpr uint8_t lod_manager_tick_bytes[] = {0x40,0x53,0x57,0x48,0x81,0xec,0xb8,0x00,0x00,0x00,0x48,0x8b,0xf9,0x0f,0x29,0xb4,0x24,0x90,0x00,0x00,0x00,0x48,0x8b,0x0d,0xe4,0x88,0x31,0x0a,0x0f,0x28,0xf2,0x48,0x8b,0xda};
+  if (std::memcmp(base + 0x2cdac90, lod_manager_tick_bytes, sizeof(lod_manager_tick_bytes))) return false;
+  lod_manager_tick = reinterpret_cast<decltype(lod_manager_tick)>(base + 0x2cdac90);
+  constexpr uint8_t get_lod_manager_bytes[] = {0x48,0x83,0xec,0x28,0x48,0x8b,0x15,0x15,0xd4,0xd6,0x09,0x83,0xba,0xe0,0x00,0x00,0x00,0x00,0x0f,0x84,0x8a,0x00,0x00,0x00,0x48,0x8b,0x82,0xb8,0x00,0x00,0x00,0x48,0x8b,0x08};
+  if (std::memcmp(base + 0x3286170, get_lod_manager_bytes, sizeof(get_lod_manager_bytes))) return false;
+  get_lod_manager = reinterpret_cast<decltype(get_lod_manager)>(base + 0x3286170);
+  constexpr uint8_t cpu_budget_bytes[] = {0x48,0x83,0xec,0x28,0x80,0x3d,0xe2,0xe5,0xc1,0x0a,0x00,0x0f,0x84,0x8c,0x01,0x00,0x00,0x48,0x8b,0x15,0xd8,0xd6,0xd6,0x09,0x83,0xba,0xe0,0x00,0x00,0x00,0x00,0x0f,0x84,0xc0,0x01,0x00,0x00};
+  if (std::memcmp(base + 0x3285ea0, cpu_budget_bytes, sizeof(cpu_budget_bytes))) return false;
+  cpu_budget = reinterpret_cast<decltype(cpu_budget)>(base + 0x3285ea0);
   constexpr uint8_t process_queue_bytes[] = {0x4c,0x8b,0xdc,0x49,0x89,0x4b,0x08,0x53,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57,0x48,0x81,0xec,0x40,0x01,0x00,0x00,0x41,0x0f,0x29,0x73,0xb8,0x4c,0x8b,0xe9};
   if (std::memcmp(base + 0x3284de0, process_queue_bytes, sizeof(process_queue_bytes))) return false;
   process_queue = reinterpret_cast<decltype(process_queue)>(base + 0x3284de0);
@@ -537,6 +683,43 @@ inline bool Resolve() {
     auto handle = class_get_field_from_name(controller,field.first);
     if (!handle || (field_flags(handle) & 0x10) || field_get_offset(handle) != field.second) return false;
   }
+  void* (*static_data)(void*) = nullptr;
+  void (*class_init)(void*) = nullptr;
+  if (!ResolveExport(module,"il2cpp_class_get_static_field_data",&static_data)
+      || !ResolveExport(module,"il2cpp_runtime_class_init",&class_init)) return false;
+  auto lod_manager_type = class_from_name(image,"Beyond.NPC.Lod","NPCCrowdLodManager");
+  auto atmosphere_type = class_from_name(image,"Beyond.Gameplay.Core","AtmosphereNpcMgr");
+  auto npc_manager_type = class_from_name(image,"Beyond.Gameplay.Core","NpcManager");
+  auto world_type = class_from_name(image,"Beyond.Gameplay.Core","GameWorld");
+  auto settings_type = class_from_name(image,"Beyond.NPC.Lod","NPCCrowdLODSetting");
+  auto aoi_type = class_from_name(image,"Beyond.Gameplay.Core","AtmosphereNpcAoiSetting");
+  if (!lod_manager_type || !atmosphere_type || !npc_manager_type || !world_type || !settings_type || !aoi_type) return false;
+  struct BudgetField { void* type; const char* name; size_t offset; bool is_static; };
+  for (const auto& field : {BudgetField{lod_manager_type,"m_lods",0x20,false}, BudgetField{lod_manager_type,"m_standOnlyNpcLods",0x28,false},
+       BudgetField{npc_manager_type,"m_proxyMissionNpcCount",0xb8,false},
+       BudgetField{atmosphere_type,"s_movingNpcCountLimit",0x1c,true},
+       BudgetField{world_type,"npcManager",0x68,true},
+       BudgetField{settings_type,"s_maxNPCRenderNum",0x1c,true},
+       BudgetField{aoi_type,"s_maxAtmosphereCpuNpcCount",0x24,true}}) {
+    auto handle = class_get_field_from_name(field.type,field.name);
+    if (!handle || ((field_flags(handle)&0x10)!=0) != field.is_static || field_get_offset(handle) != field.offset) {
+      char message[256];
+      std::snprintf(message,sizeof(message),"Endfield enhancer: NPC budget field validation failed: %s.%s expected_offset=%zu actual_offset=%td expected_static=%d actual_static=%d.",
+          class_name(field.type),field.name,field.offset,handle ? static_cast<ptrdiff_t>(field_get_offset(handle)) : -1,
+          static_cast<int>(field.is_static),handle ? static_cast<int>((field_flags(handle)&0x10)!=0) : -1);
+      Log(reshade::log::level::warning,message); return false;
+    }
+  }
+  class_init(atmosphere_type); class_init(world_type); class_init(settings_type); class_init(aoi_type);
+  auto* atmosphere_data = static_cast<uint8_t*>(static_data(atmosphere_type));
+  auto* world_data = static_cast<uint8_t*>(static_data(world_type));
+  auto* settings_data = static_cast<uint8_t*>(static_data(settings_type));
+  auto* aoi_data = static_cast<uint8_t*>(static_data(aoi_type));
+  if (!atmosphere_data || !world_data || !settings_data || !aoi_data) return false;
+  budget_model_cap = reinterpret_cast<int*>(settings_data+0x1c);
+  budget_crowd_cap = reinterpret_cast<int*>(aoi_data+0x24);
+  budget_moving_reserve = reinterpret_cast<int*>(atmosphere_data+0x1c);
+  budget_npc_manager = reinterpret_cast<void**>(world_data+0x68);
   auto crowd = class_from_name(image, "Beyond.NPC", "NPCCrowdEntityComponent");
   if (!agent || !crowd) return false;
   struct Field { const char* name; size_t offset; };
@@ -563,6 +746,7 @@ inline bool Resolve() {
 } // namespace detail
 inline void OnPresent() {
   using namespace detail;
+  ++budget_epoch;
   nearest = closest_first >= 0.5f;
   npc_loading::automatic_loading = false;
   static std::array<float, 6> previous{-1,-1,-1,-1,-1,-1};
@@ -615,6 +799,9 @@ inline void OnPresent() {
     Log(reshade::log::level::info,reasons);
     std::snprintf(reasons,sizeof(reasons),"Endfield enhancer: reload queue 5s selected=%llu rounds=%llu fade_skipped=%llu restore_blocked=%llu.",
         queue_selected.exchange(0),queue_rounds.exchange(0),fade_skipped.exchange(0),restore_blocked.exchange(0));
+    Log(reshade::log::level::info,reasons);
+    std::snprintf(reasons,sizeof(reasons),"Endfield enhancer: visible NPC budget 5s rank_adjustments=%llu crowd_budget_adjustments=%llu.",
+        model_rank_reclaimed.exchange(0),crowd_budget_reclaimed.exchange(0));
     Log(reshade::log::level::info,reasons);
   }
 }
