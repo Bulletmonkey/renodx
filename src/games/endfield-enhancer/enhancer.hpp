@@ -1184,7 +1184,7 @@ inline void OnPresent(reshade::api::device* device) {
     TryInstallStreamlineHook(device);
   }
 
-  const bool gtao_enabled = gtao_resolution == 1.f || gtao_resolution == 2.f;
+  const bool gtao_enabled = gtao_resolution == 1.f;
   if (ssr_resolution_hook_installed && !ssr_resolution_failed.load(std::memory_order_relaxed)) {
     uint64_t previous = ssr_resolution_state.load(std::memory_order_relaxed);
     const uint64_t requested = (ssr_resolution == 1.f ? 1u : 0u)
@@ -1222,7 +1222,7 @@ inline void OnPresent(reshade::api::device* device) {
     InstallRenderPathHook();
   }
   gtao_resolution_multiplier.store(
-      gtao_ready && gtao_enabled ? (gtao_resolution == 2.f ? 4u : 2u) : 1u, std::memory_order_relaxed);
+      gtao_ready && gtao_enabled ? 2u : 1u, std::memory_order_relaxed);
   dof_resolution_override.store(dof_resolution == 1.f || dof_resolution == 2.f ? dof_resolution : 0.f, std::memory_order_relaxed);
   dof_focus_override.store(dof_focus_distance >= 0.5f && dof_focus_distance <= 200.f ? dof_focus_distance : 10.f, std::memory_order_relaxed);
   dof_near_override.store(dof_near_blur >= 0.f && dof_near_blur <= 10.f ? dof_near_blur : 3.f, std::memory_order_relaxed);

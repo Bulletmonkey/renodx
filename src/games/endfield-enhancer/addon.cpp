@@ -202,8 +202,12 @@ renodx::utils::settings::Settings settings = {
         .label = "GTAO Resolution",
         .section = "Ambient Occlusion",
         .tooltip = "Controls the resolution of ambient occlusion.",
-        .labels = {"Half Resolution (Vanilla)", "Full Resolution", "Double Resolution"},
+        .labels = {"Half Resolution (Vanilla)", "Full Resolution"},
         .tint = kVisualTint,
+        .parse = [](float value) {
+          // Migrate saved Double Resolution selections to Full Resolution.
+          return value == 1.f || value == 2.f ? 1.f : 0.f;
+        },
     },
     new renodx::utils::settings::Setting{
         .key = "SSRResolution",
