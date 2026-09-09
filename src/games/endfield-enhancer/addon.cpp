@@ -18,6 +18,7 @@
 #include "./world_distance.hpp"
 #include "./ssr_resolve.hpp"
 #include "./runtime_status.hpp"
+#include "./screenshots.hpp"
 #include "./vulkan_loader_api.hpp"
 
 namespace {
@@ -82,6 +83,7 @@ void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
 }
 
 void OnInitDevice(reshade::api::device* device) {
+  endfield::screenshots::observer::OnInitDevice(device);
   // Install the SSR hook before the first render graph/history.
   if (device != nullptr
       && (device->get_api() == reshade::api::device_api::vulkan
@@ -192,6 +194,36 @@ renodx::utils::settings::Settings settings = {
         .on_change_value = [](float previous, float current) {
           ClampFpsLimit(background_fps_limit_setting, previous, current);
         },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "HDRScreenshots",
+        .binding = &endfield::screenshots::enabled,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "HDR Screenshots",
+        .section = "Screenshots",
+        .tooltip = "Saves an HDR PNG alongside a corrected SDR screenshot. Enable before opening the capture screen.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+        .is_enabled = [] { return !endfield::screenshots::unavailable; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "Waiting for recognized Vulkan HDR output.",
+        .section = "Screenshots",
+        .is_visible = [] { return endfield::screenshots::enabled >= 0.5f && endfield::screenshots::detail::status == 1; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "Requires HDR output and US Modern color space.",
+        .section = "Screenshots",
+        .is_visible = [] { return endfield::screenshots::enabled >= 0.5f && endfield::screenshots::detail::status == 2; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "HDR screenshots unavailable for this game build.",
+        .section = "Screenshots",
+        .is_visible = [] { return endfield::screenshots::enabled >= 0.5f && endfield::screenshots::detail::status == 3; },
     },
     new renodx::utils::settings::Setting{
         .key = "FullResolutionGTAO",
@@ -756,6 +788,7 @@ void OnPresent(
   endfield::npc_offcamera::OnPresent();
   endfield::npc_loading::OnPresent();
   endfield::world_distance::OnPresent();
+  endfield::screenshots::OnPresent();
 
   uint32_t delay = limiter_resume_delay.load(std::memory_order_relaxed);
   if (delay != 0) {
@@ -795,9 +828,15 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
       reshade::register_event<reshade::addon_event::destroy_swapchain>(
           OnDestroySwapchain);
       reshade::register_event<reshade::addon_event::present>(OnPresent);
+      reshade::register_event<reshade::addon_event::init_command_list>(endfield::screenshots::observer::OnInitCommandList);
+      reshade::register_event<reshade::addon_event::init_command_queue>(endfield::screenshots::observer::OnInitQueue);
+      reshade::register_event<reshade::addon_event::destroy_device>(endfield::screenshots::observer::OnDestroyDevice);
       break;
     case DLL_PROCESS_DETACH:
       reshade::unregister_event<reshade::addon_event::present>(OnPresent);
+      reshade::unregister_event<reshade::addon_event::init_command_list>(endfield::screenshots::observer::OnInitCommandList);
+      reshade::unregister_event<reshade::addon_event::init_command_queue>(endfield::screenshots::observer::OnInitQueue);
+      reshade::unregister_event<reshade::addon_event::destroy_device>(endfield::screenshots::observer::OnDestroyDevice);
       reshade::unregister_event<reshade::addon_event::destroy_swapchain>(
           OnDestroySwapchain);
       reshade::unregister_event<reshade::addon_event::init_swapchain>(
@@ -806,6 +845,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
       reshade::unregister_event<reshade::addon_event::create_device>(OnCreateDevice);
       reshade::unregister_event<reshade::addon_event::copy_resource>(endfield::hdr_output::OnPresentationCopy);
       reshade::unregister_event<reshade::addon_event::copy_texture_region>(endfield::hdr_output::OnPresentationCopyRegion);
+      endfield::screenshots::Shutdown();
       endfield::world_distance::Shutdown();
       endfield::npc_offcamera::Shutdown();
       endfield::npc_loading::Shutdown();
