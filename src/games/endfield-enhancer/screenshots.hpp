@@ -45,12 +45,18 @@ using WatermarkWithSource = void* (*)(float,void*,int*,void*);
 using Watermark = void* (*)(float,void*);
 inline WatermarkWithSource watermark_with_source=nullptr;
 inline Watermark watermark=nullptr;
-inline void* capture_without_ui=nullptr;
 inline void* get_active_controller=nullptr;
 inline void *camera_manager_field=nullptr, *snapshot_camera_class=nullptr;
 inline void (*static_field_value)(void*,void*)=nullptr;
 inline void* (*object_class)(void*)=nullptr;
 inline std::atomic_bool current_without_frame=false;
+inline void* (*string_new)(const char*) = nullptr;
+inline void *find_object = nullptr, *get_transform = nullptr, *find_child = nullptr;
+inline void *get_game_object = nullptr, *add_component = nullptr;
+inline void *set_group_alpha = nullptr, *canvas_group_class = nullptr;
+inline const void* (*class_type)(void*) = nullptr;
+inline void* (*type_object)(const void*) = nullptr;
+inline std::array<uint32_t, 2> hidden_frame{};
 
 inline void* Invoke(void* method, void* object = nullptr, void** args = nullptr) {
   void* exception = nullptr;
@@ -93,7 +99,7 @@ inline bool IsCaptureAllocation(uintptr_t caller) {
 }
 inline bool IsPhotoMode() {
   // GetWaterMarkRT is shared by profile/gacha cards. Only the photo camera
-  // permits replacing that composition with a scene-only extraction.
+  // permits hiding the photo frame and footer.
   if (!get_active_controller || !camera_manager_field
       || !snapshot_camera_class || !static_field_value || !object_class) return false;
   try {
@@ -104,30 +110,64 @@ inline bool IsPhotoMode() {
     return controller && object_class(controller)==snapshot_camera_class;
   } catch (...) { return false; }
 }
-inline void* HookedWatermarkWithSource(float scale,void* source,int* handle,void* method) {
-  current_without_frame=false;
-  if(!active.load(std::memory_order_acquire) || !skip_frame.load() || !IsPhotoMode()) {
-    return watermark_with_source(scale,source,handle,method);
+inline void RestorePhotoFrame() {
+  // Restore after saving or before the next share, on the capture thread.
+  for (auto& handle : hidden_frame) {
+    if (!handle) continue;
+    try {
+      if (void* object = gc_target(handle)) {
+        float value = 1.f;
+        void* args[] = {&value};
+        Invoke(set_group_alpha, object, args);
+        args[0] = object;
+        Invoke(destroy, nullptr, args);
+      }
+    } catch (...) {} // The previous share panel may already have been destroyed.
+    gc_free(handle);
+    handle = 0;
   }
-  // A fresh extraction owns its RTHandle independently of the caller's source.
-  // Returning 'source' here would give two native owners the same handle.
-  void* result=nullptr;
-  try {result=Invoke(capture_without_ui);}catch(...){return watermark_with_source(scale,source,handle,method);}
-  if(!result)return watermark_with_source(scale,source,handle,method);
-  if(handle)*handle=0;
-  current_without_frame=true;
-  return result;
+}
+inline bool HidePhotoFrame() {
+  RestorePhotoFrame();
+  if (!active.load(std::memory_order_acquire) || !skip_frame.load() || !IsPhotoMode()) return false;
+  try {
+    Root path(string_new("/UINode/UIRoot/CommonSharePanel"));
+    void* args[] = {path.Get()};
+    Root panel(Invoke(find_object, nullptr, args));
+    if (!panel.Get()) return false;
+    Root transform(Invoke(get_transform, panel.Get()));
+    // Verified sibling nodes: neither contains SnapshotPanel/Main/StickerImg.
+    constexpr const char* names[] = {"ScreenPadding", "BottonNodeWaterMarkUI"};
+    for (size_t i = 0; i < hidden_frame.size(); ++i) {
+      Root name(string_new(names[i]));
+      args[0] = name.Get();
+      Root child(Invoke(find_child, transform.Get(), args));
+      if (!child.Get()) { RestorePhotoFrame(); return false; }
+      Root object(Invoke(get_game_object, child.Get()));
+      // An owned CanvasGroup leaves the game's active/layout state untouched.
+      // Restoring it cannot re-enable a footer the personal-info toggle disabled.
+      Root type(type_object(class_type(canvas_group_class)));
+      args[0] = type.Get();
+      Root group(Invoke(add_component, object.Get(), args));
+      if (!group.Get()) throw std::runtime_error("Unable to hide photo frame");
+      hidden_frame[i] = gc_new(group.Get(), true);
+      if (!hidden_frame[i]) throw std::runtime_error("Unable to retain photo frame");
+      float value = 0.f;
+      args[0] = &value;
+      Invoke(set_group_alpha, group.Get(), args);
+    }
+    return true;
+  } catch (...) { RestorePhotoFrame(); return false; }
+}
+inline void* HookedWatermarkWithSource(float scale,void* source,int* handle,void* method) {
+  const bool without_frame=HidePhotoFrame();
+  current_without_frame=without_frame;
+  return watermark_with_source(without_frame ? 1.f : scale,source,handle,method);
 }
 inline void* HookedWatermark(float scale,void* method) {
-  current_without_frame=false;
-  if(!active.load(std::memory_order_acquire) || !skip_frame.load() || !IsPhotoMode()) {
-    return watermark(scale,method);
-  }
-  void* result=nullptr;
-  try {result=Invoke(capture_without_ui);}catch(...){return watermark(scale,method);}
-  if(!result)return watermark(scale,method);
-  current_without_frame=true;
-  return result;
+  const bool without_frame=HidePhotoFrame();
+  current_without_frame=without_frame;
+  return watermark(without_frame ? 1.f : scale,method);
 }
 template <size_t Index>
 __declspec(noinline) void* HookedAlloc(int width, int height, int slices, int depth, int format,
@@ -199,6 +239,9 @@ inline bool SaveCapture(void* target, void* path, int crop, const ColorConfig& c
   return true;
 }
 inline int HookedSave(void* target, void* path, int crop, int max_mb, void* method) {
+  struct RestoreFrame {
+    ~RestoreFrame() { RestorePhotoFrame(); }
+  } restore_frame;
   if (!active.load(std::memory_order_acquire) || !target || !path) return save(target,path,crop,max_mb,method);
   ColorConfig color;
   if (!observer::ReadColor(&color) || !SupportedColor(color)) return save(target,path,crop,max_mb,method);
@@ -241,6 +284,9 @@ inline bool Resolve() {
   void* (*class_methods)(void*,void**) = nullptr;
   void (*field_get)(void*,void*) = nullptr;
   if (!ResolveExport(module,"il2cpp_object_new",&object_new)
+      || !ResolveExport(module,"il2cpp_string_new",&string_new)
+      || !ResolveExport(module,"il2cpp_class_get_type",&class_type)
+      || !ResolveExport(module,"il2cpp_type_get_object",&type_object)
       || !ResolveExport(module,"il2cpp_gchandle_new",&gc_new)
       || !ResolveExport(module,"il2cpp_gchandle_free",&gc_free)
       || !ResolveExport(module,"il2cpp_gchandle_get_target",&gc_target)
@@ -269,7 +315,17 @@ inline bool Resolve() {
   get_height = FindMethod(core,"UnityEngine","RenderTexture","get_height",0);
   get_format = FindMethod(core,"UnityEngine","RenderTexture","get_graphicsFormat",0);
   destroy = FindMethod(core,"UnityEngine","Object","Destroy",1);
+  find_object=FindMethod(core,"UnityEngine","GameObject","Find",1);
+  get_transform=FindMethod(core,"UnityEngine","GameObject","get_transform",0);
+  find_child=FindMethod(core,"UnityEngine","Transform","Find",1);
+  get_game_object=FindMethod(core,"UnityEngine","Component","get_gameObject",0);
+  add_component=FindMethod(core,"UnityEngine","GameObject","Internal_AddComponentWithType",1);
+  auto ui=FindImage("UnityEngine.UIModule.dll");
+  if (!ui) return false;
+  canvas_group_class=class_from_name(ui,"UnityEngine","CanvasGroup");
+  set_group_alpha=FindMethod(ui,"UnityEngine","CanvasGroup","set_alpha",1);
   if (!ctor || !read_pixels || !get_raw_data || !get_active || !set_active || !destroy
+      || !find_object || !get_transform || !find_child || !get_game_object || !add_component || !canvas_group_class || !set_group_alpha
       || !get_width || !get_height || !get_format) return false;
   auto graphics = class_from_name(core,"UnityEngine.Experimental.Rendering","GraphicsFormat");
   auto texture_format = class_from_name(core,"UnityEngine","TextureFormat");
@@ -283,11 +339,9 @@ inline bool Resolve() {
   if(!game)return false;
   auto mark3=FindMethod(game,"Beyond.UI","ScreenCaptureUtils","GetWaterMarkRT",3);
   auto mark1=FindMethod(game,"Beyond.UI","ScreenCaptureUtils","GetWaterMarkRT",1);
-  capture_without_ui=FindMethod(game,"Beyond.UI","ScreenCaptureUtils","GetScreenCaptureWithoutUI",0);
-  if(!game || !mark3 || !mark1 || !capture_without_ui
+  if(!game || !mark3 || !mark1
       || reinterpret_cast<uintptr_t>(static_cast<MethodInfo*>(mark3)->method_pointer)!=base+0x55deda4
-      || reinterpret_cast<uintptr_t>(static_cast<MethodInfo*>(mark1)->method_pointer)!=base+0x55def90
-      || reinterpret_cast<uintptr_t>(static_cast<MethodInfo*>(capture_without_ui)->method_pointer)!=base+0x55debe8)return false;
+      || reinterpret_cast<uintptr_t>(static_cast<MethodInfo*>(mark1)->method_pointer)!=base+0x55def90)return false;
   watermark_with_source=reinterpret_cast<WatermarkWithSource>(base+0x55deda4);
   watermark=reinterpret_cast<Watermark>(base+0x55def90);
   auto gameplay=FindImage("Gameplay.Beyond.dll");

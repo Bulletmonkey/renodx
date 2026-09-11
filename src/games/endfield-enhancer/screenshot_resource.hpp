@@ -2,7 +2,7 @@
 
 #include <atomic>
 #include <optional>
-#include "../../utils/resource_upgrade.hpp"
+#include "../../utils/resource.hpp"
 
 namespace endfield::screenshots::photo_resource {
 namespace api = reshade::api;
@@ -71,16 +71,37 @@ inline void OnInit(renodx::utils::resource::ResourceInfo* info) {
   pending.reset();
 }
 
+inline bool OnCreateView(api::device* device, api::resource resource,
+                         api::resource_usage, api::resource_view_desc& desc) {
+  if (device->get_api() != api::device_api::vulkan
+      || desc.type != api::resource_view_type::texture_2d
+      || (desc.format != api::format::r11g11b10_float
+          && desc.format != api::format::unknown)) return false;
+  bool photo = false;
+  renodx::utils::resource::GetResourceInfo(resource, [&](const auto& info) {
+    photo = !info.destroyed && info.device == device && info.upgraded
+        && info.upgrade_target == &target
+        && info.desc.texture.format == api::format::r16g16b16a16_float;
+  });
+  if (!photo) return false;
+  desc.format = api::format::r16g16b16a16_float;
+  return true;
+}
+
 inline void Use(DWORD reason) {
   if (reason == DLL_PROCESS_ATTACH) {
-    renodx::utils::resource::upgrade::Use(reason);
+    // Observe resource lifetime, but do not take ownership of the shared
+    // upgrade module's game-wide view and copy interception for one photo.
+    renodx::utils::resource::Use(reason);
     renodx::utils::resource::RegisterOnInitResourceInfoCallback(OnInit);
     reshade::register_event<reshade::addon_event::create_resource>(OnCreate);
+    reshade::register_event<reshade::addon_event::create_resource_view>(OnCreateView);
   } else if (reason == DLL_PROCESS_DETACH) {
     deadline = 0;
+    reshade::unregister_event<reshade::addon_event::create_resource_view>(OnCreateView);
     reshade::unregister_event<reshade::addon_event::create_resource>(OnCreate);
     renodx::utils::resource::UnregisterOnInitResourceInfoCallback(OnInit);
-    renodx::utils::resource::upgrade::Use(reason);
+    renodx::utils::resource::Use(reason);
   }
 }
 }

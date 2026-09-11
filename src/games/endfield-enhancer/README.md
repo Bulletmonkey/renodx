@@ -46,6 +46,24 @@ In Endfield, open the Endfield Enhancer overlay and verify:
 
 Compilation alone does not establish in-game visual or interaction validation.
 
+### Photo capture verification
+
+Photo frame removal hides only `CommonSharePanel/ScreenPadding` and
+`BottonNodeWaterMarkUI` during the native composition. Stickers remain included;
+the photo camera guard excludes profile and other share cards. The temporary
+CanvasGroups are restored and removed after saving or before the next share.
+
+Build `endfield` as well as `endfield-enhancer` when changing photo filters.
+The filter replacement is `uberpost_0x8B4A9C41.frag.slang`, compiled to
+`build/endfield.include/embed/0x8B4A9C41.spv`. It scales HDR into the filter LUT's
+range and restores that scale afterward; zero filter strength preserves HDR.
+
+Check a plain photo and a filtered photo with a sticker, with frame removal on
+and off. Verify the preview and both saved files, full screen dimensions when
+the frame is removed, and normal profile sharing afterward. Inspect the photo
+texture for RGBA16F precision and values above SDR white; the PNG bit depth alone
+does not prove the intermediate retained HDR. Also check a fresh game launch.
+
 Runtime information always lists the Vulkan loader, both base-addon variants,
 Streamline, and NVIDIA DLSS, including absent modules. The single NVIDIA DLSS
 version row reads `nvngx_dlss.dll`, with no alternate DLL or version comparison.

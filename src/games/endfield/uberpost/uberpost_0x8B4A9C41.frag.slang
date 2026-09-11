@@ -259,7 +259,10 @@ void main(
   }
   // RenoDX code: apply the user-controlled vignette after tonemapping.
   o0.xyz *= vignette_value;
-  float3 graded_encoded = saturate(renodx::color::srgb::EncodeSafe(o0.xyz));
+  // Scale HDR into the LUT's domain without clipping its channel ratios.
+  float filter_scale = shader_injection.tone_map_type == 0.f
+      ? 1.f : rcp(max(1.f, max(o0.x, max(o0.y, o0.z))));
+  float3 graded_encoded = saturate(renodx::color::srgb::EncodeSafe(o0.xyz * filter_scale));
   // RenoDX code end
   float lut_z = graded_encoded.z * cb1[8].z;
   float lut_slice = floor(lut_z);
@@ -269,8 +272,14 @@ void main(
       t3.SampleLevel(s0_s, lut_uv, 0).xyz,
       t3.SampleLevel(s0_s, lut_uv + float2(cb1[8].y, 0), 0).xyz,
       lut_z - lut_slice);
-  // RenoDX code start: return the vanilla composite to linear, then apply optional grain and output encoding.
-  o0.xyz = renodx::color::srgb::DecodeSafe(lerp(graded_encoded, second_lut, cb1[8].w));
+  // RenoDX code start: the photo LUT is SDR, but its input scene can be HDR.
+  // Restore the headroom removed for sampling; zero strength preserves the scene exactly.
+  float3 filtered_linear = renodx::color::srgb::DecodeSafe(lerp(graded_encoded, second_lut, cb1[8].w));
+  if (shader_injection.tone_map_type == 0.f) {
+    o0.xyz = filtered_linear;
+  } else if (cb1[8].w != 0.f) {
+    o0.xyz = filtered_linear / filter_scale;
+  }
   if (CUSTOM_GRAIN_STRENGTH > 0) {
     o0.xyz = renodx::effects::ApplyFilmGrain(
         o0.xyz,
