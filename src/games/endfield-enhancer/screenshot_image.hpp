@@ -122,11 +122,11 @@ inline std::array<float,3> ToSdr(const std::array<float,3>& rgb,const ColorConfi
 template <typename StoredPixel>
 inline bool ConvertStoredPixels(std::span<const StoredPixel> pixels, uint32_t width, uint32_t height,
                           const ColorConfig& config, std::vector<uint16_t>* hdr, std::vector<uint8_t>* sdr) {
-  if (!SupportedColor(config) || !width || !height || width > 16384 || height > 16384
+  if (!hdr || !SupportedColor(config) || !width || !height || width > 16384 || height > 16384
       || static_cast<uint64_t>(width) * height > 67108864
       || pixels.size() != static_cast<size_t>(width) * height) return false;
   const SdrMapper sdr_mapper(config);
-  hdr->resize(pixels.size() * 3); sdr->resize(pixels.size() * 4);
+  hdr->resize(pixels.size() * 3); if(sdr)sdr->resize(pixels.size() * 4);
   for (uint32_t y = 0; y < height; ++y) for (uint32_t x = 0; x < width; ++x) {
     // Unity ReadPixels/GetPixels starts at the bottom left; PNG starts at the top.
     const auto p = DecodePixel(pixels[static_cast<size_t>(height - 1 - y) * width + x]);
@@ -139,16 +139,16 @@ inline bool ConvertStoredPixels(std::span<const StoredPixel> pixels, uint32_t wi
         0.627403896f * rgb[0] + 0.329283038f * rgb[1] + 0.043313066f * rgb[2],
         0.069097289f * rgb[0] + 0.919540395f * rgb[1] + 0.011362316f * rgb[2],
         0.016391439f * rgb[0] + 0.088013308f * rgb[1] + 0.895595253f * rgb[2]};
-    const auto sdr_rgb=sdr_mapper.Apply(rgb);
+    const auto sdr_rgb=sdr?sdr_mapper.Apply(rgb):std::array<float,3>{};
     // Match SwapChainPass: one scale preserves highlight RGB ratios at the peak.
     const float hdr_scale = config.white_nits * config.peak_nits
         / std::max({wide[0] * config.white_nits, wide[1] * config.white_nits,
                     wide[2] * config.white_nits, config.peak_nits});
     for (size_t c = 0; c < 3; ++c) {
       (*hdr)[i * 3 + c] = EncodePq(std::max(wide[c] * hdr_scale, 0.f));
-      (*sdr)[i * 4 + c] = static_cast<uint8_t>(std::lround(std::clamp(SrgbEncode(std::max(sdr_rgb[c], 0.f)), 0.f, 1.f) * 255.f));
+      if(sdr)(*sdr)[i * 4 + c] = static_cast<uint8_t>(std::lround(std::clamp(SrgbEncode(std::max(sdr_rgb[c], 0.f)), 0.f, 1.f) * 255.f));
     }
-    (*sdr)[i * 4 + 3] = 255;
+    if(sdr)(*sdr)[i * 4 + 3] = 255;
   }
   return true;
 }

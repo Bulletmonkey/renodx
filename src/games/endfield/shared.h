@@ -86,26 +86,6 @@ cbuffer shader_injection : register(b13) {
 }
 #endif
 
-#ifdef ENDFIELD_SDR_PHOTO
-// RenoDX code start: isolated photo pass; never alter the live injected settings.
-// This override precedes all helpers so LUT sampling, grading, intermediate
-// encoding and debug helpers use the same settings in this shader variant.
-ShaderInjectData GetSdrPhotoSettings() {
-  ShaderInjectData settings = shader_injection;
-  settings.tone_map_type = 0.f;
-  settings.gamma_correction = 0.f;
-  settings.intermediate_scaling = 1.f;
-  settings.intermediate_encoding = 0.f;
-  settings.intermediate_color_space = 0.f;
-  settings.swap_chain_gamma_correction = 0.f;
-  settings.debug_shader_color = 0.f;
-  return settings;
-}
-#undef shader_injection
-#define shader_injection GetSdrPhotoSettings()
-// RenoDX code end
-#endif
-
 #define RENODX_TONE_MAP_TYPE                 shader_injection.tone_map_type
 #define RENODX_PEAK_WHITE_NITS               shader_injection.peak_white_nits
 #define RENODX_DIFFUSE_WHITE_NITS            shader_injection.diffuse_white_nits
