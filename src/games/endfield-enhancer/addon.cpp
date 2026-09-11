@@ -18,6 +18,7 @@
 #include "./world_distance.hpp"
 #include "./ssr_resolve.hpp"
 #include "./runtime_status.hpp"
+#include "./menu.hpp"
 #include "./screenshots.hpp"
 #include "./vulkan_loader_api.hpp"
 
@@ -173,7 +174,7 @@ renodx::utils::settings::Settings settings = {
         .binding = &endfield::enhancer::frame_generation_fps_limit,
         .value_type = renodx::utils::settings::SettingValueType::FLOAT,
         .default_value = 240.f,
-        .label = "Frame Generation",
+        .label = "Frame Generation FPS Limit",
         .section = "FPS Limit",
         .tooltip = "Limits FPS while frame generation is active.",
         .tint = kFpsTint,
@@ -191,7 +192,7 @@ renodx::utils::settings::Settings settings = {
         .binding = &endfield::enhancer::background_fps_limit,
         .value_type = renodx::utils::settings::SettingValueType::FLOAT,
         .default_value = 60.f,
-        .label = "Background",
+        .label = "Background FPS Limit",
         .section = "FPS Limit",
         .tooltip = "Limits FPS while the game is in the background.",
         .tint = kFpsTint,
@@ -250,10 +251,10 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 0.f,
         .can_reset = false,
-        .label = "GTAO Resolution",
+        .label = "GTAO Full Resolution",
         .section = "Ambient Occlusion",
-        .tooltip = "Controls the resolution of ambient occlusion.",
-        .labels = {"Half Resolution (Vanilla)", "Full Resolution"},
+        .tooltip = "Renders ambient occlusion at full resolution. Off restores the vanilla half resolution.",
+        .labels = {"Off", "On"},
         .tint = kVisualTint,
         .parse = [](float value) {
           // Migrate saved Double Resolution selections to Full Resolution.
@@ -266,10 +267,10 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 0.f,
         .can_reset = false,
-        .label = "SSR Resolution",
+        .label = "SSR Full Resolution",
         .section = "Screen Space Reflections",
-        .tooltip = "Controls reflection and depth resolution, with matching reflection alignment.",
-        .labels = {"Half Resolution (Vanilla)", "Full Resolution"},
+        .tooltip = "Renders reflections and their depth at full resolution, with matching reflection alignment. Off restores the vanilla half resolution.",
+        .labels = {"Off", "On"},
         .tint = kVisualTint,
         .parse = [](float value) {
           // Write() also runs on initial config load, not only UI changes.
@@ -304,8 +305,8 @@ renodx::utils::settings::Settings settings = {
         .default_value = 0.f,
         .label = "DoF Resolution",
         .section = "Depth of Field",
-        .tooltip = "Controls the resolution of depth of field.",
-        .labels = {"Half Resolution (Vanilla)", "Full Resolution", "Double Resolution"},
+        .tooltip = "Controls depth-of-field resolution: Vanilla uses half resolution; Full and Double increase it.",
+        .labels = {"Vanilla", "Full", "Double"},
         .tint = kVisualTint,
     },
     new renodx::utils::settings::Setting{
@@ -382,8 +383,16 @@ renodx::utils::settings::Settings settings = {
         .is_visible = [] { return !hdr_available; },
     },
     new renodx::utils::settings::Setting{
-        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "Restart the game to apply the DLSS-G HDR Patch change.",
         .section = "DLSS-G HDR Patch",
+        .tint = 0xE6AD45,
+        .is_visible = [] { return (endfield::enhancer::hdr_frame_generation >= 0.5f) != hdr_requested_at_startup; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+        .label = "Runtime Information",
+        .section = "Runtime Information",
         .on_draw = [] {
           endfield::runtime_status::Draw(overlay_device);
           return false;
@@ -407,7 +416,7 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 0.f,
         .label = "Override NPC Model Limit",
-        .section = "Entity Distance",
+        .section = "Entity Population & Distance",
         .tooltip = "Off restores the game's values.",
         .labels = {"Off", "On"},
         .tint = kVisualTint,
@@ -418,7 +427,7 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 100.f,
         .label = "NPC Model Limit",
-        .section = "Entity Distance",
+        .section = "Entity Population & Distance",
         .tooltip = "Maximum active NPC models. Off-camera unloads free slots.",
         .tint = kVisualTint,
         .min = 50.f, .max = endfield::npc_distance::kMaxModelLimit, .format = "%d",
@@ -430,7 +439,7 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 0.f,
         .label = "Override NPC Model Distance",
-        .section = "Entity Distance",
+        .section = "Entity Population & Distance",
         .tooltip = "Off restores the game's values.",
         .labels = {"Off", "On"},
         .tint = kVisualTint,
@@ -440,7 +449,7 @@ renodx::utils::settings::Settings settings = {
         .binding = &endfield::npc_distance::regular_multiplier,
         .default_value = 2.f,
         .label = "NPC Model Distance",
-        .section = "Entity Distance",
+        .section = "Entity Population & Distance",
         .tooltip = "Adjusts how far NPC models remain loaded.",
         .tint = kVisualTint,
         .min = 1.f, .max = endfield::npc_distance::kMaxDistanceMultiplier, .format = "%.1fx",
@@ -455,7 +464,7 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 0.f,
         .label = "Override Ambient NPC Distance",
-        .section = "Entity Distance",
+        .section = "Entity Population & Distance",
         .tooltip = "Off restores the game's values.",
         .labels = {"Off", "On"},
         .tint = kVisualTint,
@@ -465,7 +474,7 @@ renodx::utils::settings::Settings settings = {
         .binding = &endfield::npc_distance::ambient_multiplier,
         .default_value = 2.f,
         .label = "Ambient NPC Distance",
-        .section = "Entity Distance",
+        .section = "Entity Population & Distance",
         .tooltip = "Adjusts the loading distance for background crowds.",
         .tint = kVisualTint,
         .min = 1.f, .max = endfield::npc_distance::kMaxDistanceMultiplier, .format = "%.1fx",
@@ -480,7 +489,7 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 0.f,
         .label = "Override Enemy Load Distance",
-        .section = "Entity Distance",
+        .section = "Entity Population & Distance",
         .tooltip = "Off restores the game's values.",
         .labels = {"Off", "On"},
         .tint = kVisualTint,
@@ -490,7 +499,7 @@ renodx::utils::settings::Settings settings = {
         .binding = &endfield::world_distance::enemies_multiplier,
         .default_value = 2.f,
         .label = "Enemy Load Distance",
-        .section = "Entity Distance",
+        .section = "Entity Population & Distance",
         .tooltip = "Adjusts how far enemies remain loaded.",
         .tint = kVisualTint,
         .min = 1.f, .max = 10.f, .format = "%.1fx",
@@ -505,7 +514,7 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 0.f,
         .label = "Override Interactive Entity Load Distance",
-        .section = "Entity Distance",
+        .section = "Entity Population & Distance",
         .tooltip = "Off restores the game's values.",
         .labels = {"Off", "On"},
         .tint = kVisualTint,
@@ -515,7 +524,7 @@ renodx::utils::settings::Settings settings = {
         .binding = &endfield::world_distance::interactive_multiplier,
         .default_value = 2.f,
         .label = "Interactive Entity Load Distance",
-        .section = "Entity Distance",
+        .section = "Entity Population & Distance",
         .tooltip = "Adjusts the loading distance for interactive objects, such as teleporters.",
         .tint = kVisualTint,
         .min = 1.f, .max = 10.f, .format = "%.1fx",
@@ -527,13 +536,13 @@ renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
         .label = "Entity distance unavailable; check ReShade.log.",
-        .section = "Entity Distance",
+        .section = "Entity Population & Distance",
         .is_visible = [] { return endfield::world_distance::unavailable; },
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
         .label = "NPC distance controls unavailable; check ReShade.log for details.",
-        .section = "Entity Distance",
+        .section = "Entity Population & Distance",
         .is_visible = [] { return endfield::npc_distance::unavailable; },
     },
     new renodx::utils::settings::Setting{
@@ -734,7 +743,7 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 0.f,
         .label = "Uncensor",
-        .section = "Camera",
+        .section = "Uncensor",
         .tooltip = "Disables camera-driven character transparency. May also affect proximity fading.",
         .labels = {"Off", "On"},
         .tint = kVisualTint,
@@ -742,12 +751,12 @@ renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
         .label = "Uncensor unavailable for this game build or another camera patch is active.",
-        .section = "Camera",
+        .section = "Uncensor",
         .is_visible = []() { return endfield::uncensor::unavailable; },
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
-        .label = "- Addon developed by Rat.",
+        .label = "- Addon developed by ItsaRat.",
         .section = "About",
     },
     new renodx::utils::settings::Setting{
@@ -759,6 +768,15 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
         .label = "- Special thanks to RankFTW.",
         .section = "About",
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+        .label = "Addon Build Version",
+        .section = "About",
+        .on_draw = [] {
+          ImGui::TextWrapped("Addon build: %s", endfield::runtime_status::LoadedVersion(endfield::runtime_status::addon_module).c_str());
+          return false;
+        },
     },
 };
 
@@ -772,7 +790,7 @@ void OnOverlay(reshade::api::effect_runtime* runtime) {
   hdr_warning_setting->label = reason == nullptr ? "" : reason;
   // Match ReShade's standard text size while retaining its global UI scaling.
   ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase);
-  renodx::utils::settings::OnRegisterOverlay(runtime);
+  endfield::menu::Draw(settings);
   ImGui::PopFont();
   overlay_device = nullptr;
 }
@@ -827,7 +845,7 @@ void OnPresent(
 extern "C" __declspec(dllexport) const char* const NAME =
     "RenoDX: Arknights Endfield Enhancer";
 extern "C" __declspec(dllexport) const char* const AUTHOR =
-    "ItsTheSewerRat";
+    "ItsaRat";
 extern "C" __declspec(dllexport) const char* const DESCRIPTION =
     "FPS, SSR, DoF, GTAO, LOD, and HDR frame-generation improvements for Arknights: Endfield";
 
@@ -837,6 +855,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
 
   switch (reason) {
     case DLL_PROCESS_ATTACH:
+      endfield::runtime_status::addon_module = h_module;
       if (!reshade::register_addon(h_module)) return FALSE;
       renodx::utils::settings::use_presets = false;
       renodx::utils::settings::overlay_title = "Endfield Enhancer";
