@@ -6,8 +6,14 @@
 #include "./npc_distance.hpp"
 #include "./screenshot_image.hpp"
 #include "./screenshot_observer.hpp"
+#include "./screenshot_alpha.hpp"
 
 namespace endfield::screenshots {
+#ifdef ENDFIELD_DISABLE_PHOTO_FP16
+inline constexpr bool photo_fp16_support = false;
+#else
+inline constexpr bool photo_fp16_support = true;
+#endif
 inline float enabled = 0.f;
 inline bool unavailable = false;
 namespace detail {
@@ -31,7 +37,7 @@ inline void* texture_class = nullptr;
 inline void *ctor = nullptr, *read_pixels = nullptr, *get_raw_data = nullptr;
 inline void *get_active = nullptr, *set_active = nullptr, *destroy = nullptr;
 inline void *get_width = nullptr, *get_height = nullptr, *get_format = nullptr;
-inline int hdr_format = 48, cpu_format = 20;
+inline int hdr_format = 48, cpu_format = 17;
 inline std::atomic_uint64_t saves{0};
 
 inline void* Invoke(void* method, void* object = nullptr, void** args = nullptr) {
@@ -79,6 +85,8 @@ __declspec(noinline) void* HookedAlloc(int width, int height, int slices, int de
     bool shadow, int aniso, float bias, int samples, bool bind_ms, int memoryless, void* name, void* method) {
   if (active.load(std::memory_order_acquire) && format == 8
       && IsCaptureAllocation(reinterpret_cast<uintptr_t>(_ReturnAddress()))) {
+    if (photo_fp16_support) photo_alpha::OnPhotoRequested();
+    photo_resource::Arm(width);
     format = hdr_format;
   }
   return allocs[Index](width,height,slices,depth,format,filter,wrap,dimension,random_write,
@@ -94,7 +102,7 @@ inline bool SaveCapture(void* target, void* path, int crop, const ColorConfig& c
   if (crop > 0 && crop < height) height -= crop; // Match the game's native crop rectangle.
   if (width <= 0 || height <= 0 || width > 16384 || height > 16384
       || static_cast<uint64_t>(width) * height > 67108864) throw std::runtime_error("Unsupported screenshot dimensions");
-  std::vector<Pixel> pixels;
+  std::vector<HalfPixel> pixels;
   {
     Root source(target);
     Readback readback;
@@ -110,11 +118,11 @@ inline bool SaveCapture(void* target, void* path, int crop, const ColorConfig& c
     Invoke(read_pixels,readback.texture.Get(),read_args);
     Root colors(Invoke(get_raw_data,readback.texture.Get()));
     const size_t count = static_cast<size_t>(width) * height;
-    if (!colors.Get() || array_length(colors.Get()) != count * sizeof(Pixel)) throw std::runtime_error("Screenshot readback size mismatch");
-    // Read the RGBA32F bytes directly. GetPixels invokes Unity's CPU format
+    if (!colors.Get() || array_length(colors.Get()) != count * sizeof(HalfPixel)) throw std::runtime_error("Screenshot readback size mismatch");
+    // Read the RGBA16F bytes directly. GetPixels invokes Unity's CPU format
     // conversion; the raw byte array preserves the readback channels unchanged.
     // Exact IL2CPP x64 SZARRAY layout, pinned until the copy finishes.
-    const auto* data = reinterpret_cast<const Pixel*>(static_cast<const uint8_t*>(colors.Get()) + 0x20);
+    const auto* data = reinterpret_cast<const HalfPixel*>(static_cast<const uint8_t*>(colors.Get()) + 0x20);
     pixels.assign(data,data+count);
   }
   std::vector<uint16_t> hdr;
@@ -211,10 +219,10 @@ inline bool Resolve() {
   auto texture_format = class_from_name(core,"UnityEngine","TextureFormat");
   if (!graphics || !texture_format) return false;
   auto hdr_field = class_get_field_from_name(graphics,"R16G16B16A16_SFloat");
-  auto cpu_field = class_get_field_from_name(texture_format,"RGBAFloat");
+  auto cpu_field = class_get_field_from_name(texture_format,"RGBAHalf");
   if (!hdr_field || !cpu_field) return false;
   field_get(hdr_field,&hdr_format); field_get(cpu_field,&cpu_format);
-  if (hdr_format != 48 || cpu_format != 20) return false;
+  if (hdr_format != 48 || cpu_format != 17) return false;
   // Full SHA gate above plus unique live executable prefixes: reject existing patches.
   struct Hook { uint32_t rva; std::array<uint8_t,64> bytes; };
   constexpr Hook hooks[] = {
@@ -260,6 +268,7 @@ inline void OnPresent() {
     status = observed ? 2 : 1;
     return;
   }
+  if (photo_fp16_support) photo_alpha::OnPresent();
   status = 0;
   if (!installed) {
     if (!enhancer::detail::ResolveApi() || attempted) return;

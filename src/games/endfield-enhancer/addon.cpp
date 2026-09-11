@@ -23,6 +23,13 @@
 
 namespace {
 
+// Diagnostic build switch: omit the entire screenshot subsystem, including startup hooks.
+#ifdef ENDFIELD_DISABLE_SCREENSHOT_SUPPORT
+constexpr bool kScreenshotSupport = false;
+#else
+constexpr bool kScreenshotSupport = true;
+#endif
+
 constexpr uint32_t kLimiterResumeDelayFrames = 120;
 constexpr uint32_t kFpsTint = 0x5C8FEA;
 constexpr uint32_t kVisualTint = kFpsTint;
@@ -83,7 +90,7 @@ void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
 }
 
 void OnInitDevice(reshade::api::device* device) {
-  endfield::screenshots::observer::OnInitDevice(device);
+  if (kScreenshotSupport) endfield::screenshots::observer::OnInitDevice(device);
   // Install the SSR hook before the first render graph/history.
   if (device != nullptr
       && (device->get_api() == reshade::api::device_api::vulkan
@@ -205,7 +212,7 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "Saves an HDR PNG alongside a corrected SDR screenshot. Enable before opening the capture screen.",
         .labels = {"Off", "On"},
         .tint = kVisualTint,
-        .is_enabled = [] { return !endfield::screenshots::unavailable; },
+        .is_enabled = [] { return kScreenshotSupport && !endfield::screenshots::unavailable; },
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
@@ -788,7 +795,7 @@ void OnPresent(
   endfield::npc_offcamera::OnPresent();
   endfield::npc_loading::OnPresent();
   endfield::world_distance::OnPresent();
-  endfield::screenshots::OnPresent();
+  if (kScreenshotSupport) endfield::screenshots::OnPresent();
 
   uint32_t delay = limiter_resume_delay.load(std::memory_order_relaxed);
   if (delay != 0) {
@@ -828,15 +835,15 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
       reshade::register_event<reshade::addon_event::destroy_swapchain>(
           OnDestroySwapchain);
       reshade::register_event<reshade::addon_event::present>(OnPresent);
-      reshade::register_event<reshade::addon_event::init_command_list>(endfield::screenshots::observer::OnInitCommandList);
-      reshade::register_event<reshade::addon_event::init_command_queue>(endfield::screenshots::observer::OnInitQueue);
-      reshade::register_event<reshade::addon_event::destroy_device>(endfield::screenshots::observer::OnDestroyDevice);
+      if (kScreenshotSupport) reshade::register_event<reshade::addon_event::init_command_list>(endfield::screenshots::observer::OnInitCommandList);
+      if (kScreenshotSupport) reshade::register_event<reshade::addon_event::init_command_queue>(endfield::screenshots::observer::OnInitQueue);
+      if (kScreenshotSupport) reshade::register_event<reshade::addon_event::destroy_device>(endfield::screenshots::observer::OnDestroyDevice);
       break;
     case DLL_PROCESS_DETACH:
       reshade::unregister_event<reshade::addon_event::present>(OnPresent);
-      reshade::unregister_event<reshade::addon_event::init_command_list>(endfield::screenshots::observer::OnInitCommandList);
-      reshade::unregister_event<reshade::addon_event::init_command_queue>(endfield::screenshots::observer::OnInitQueue);
-      reshade::unregister_event<reshade::addon_event::destroy_device>(endfield::screenshots::observer::OnDestroyDevice);
+      if (kScreenshotSupport) reshade::unregister_event<reshade::addon_event::init_command_list>(endfield::screenshots::observer::OnInitCommandList);
+      if (kScreenshotSupport) reshade::unregister_event<reshade::addon_event::init_command_queue>(endfield::screenshots::observer::OnInitQueue);
+      if (kScreenshotSupport) reshade::unregister_event<reshade::addon_event::destroy_device>(endfield::screenshots::observer::OnDestroyDevice);
       reshade::unregister_event<reshade::addon_event::destroy_swapchain>(
           OnDestroySwapchain);
       reshade::unregister_event<reshade::addon_event::init_swapchain>(
@@ -845,7 +852,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
       reshade::unregister_event<reshade::addon_event::create_device>(OnCreateDevice);
       reshade::unregister_event<reshade::addon_event::copy_resource>(endfield::hdr_output::OnPresentationCopy);
       reshade::unregister_event<reshade::addon_event::copy_texture_region>(endfield::hdr_output::OnPresentationCopyRegion);
-      endfield::screenshots::Shutdown();
+      if (kScreenshotSupport) endfield::screenshots::Shutdown();
+      if (kScreenshotSupport && endfield::screenshots::photo_fp16_support) endfield::screenshots::photo_alpha::Use(reason);
+      if (kScreenshotSupport && endfield::screenshots::photo_fp16_support) endfield::screenshots::photo_resource::Use(reason);
       endfield::world_distance::Shutdown();
       endfield::npc_offcamera::Shutdown();
       endfield::npc_loading::Shutdown();
@@ -864,6 +873,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
   renodx::utils::settings::Use(reason, &settings);
   if (reason == DLL_PROCESS_ATTACH) {
     endfield::ssr_resolve::Use(reason);
+    if (kScreenshotSupport && endfield::screenshots::photo_fp16_support) endfield::screenshots::photo_resource::Use(reason);
+    if (kScreenshotSupport && endfield::screenshots::photo_fp16_support) endfield::screenshots::photo_alpha::Use(reason);
     hdr_requested_at_startup = endfield::enhancer::hdr_frame_generation >= 0.5f;
     if (hdr_requested_at_startup && endfield::vulkan_loader::IsInstalled()) {
       // Reserve copy observation before the base addon can consume these events.

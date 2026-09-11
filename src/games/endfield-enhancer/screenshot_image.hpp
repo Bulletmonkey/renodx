@@ -11,6 +11,20 @@
 namespace endfield::screenshots {
 struct Pixel { float r, g, b, a; };
 static_assert(sizeof(Pixel) == 16);
+struct HalfPixel { uint16_t r, g, b, a; };
+static_assert(sizeof(HalfPixel) == 8);
+inline float DecodeHalf(uint16_t value) {
+  const uint32_t exponent = (value >> 10) & 31, mantissa = value & 1023;
+  float result;
+  if (exponent == 31) result = mantissa ? std::numeric_limits<float>::quiet_NaN() : std::numeric_limits<float>::infinity();
+  else result = exponent == 0 ? std::ldexp(static_cast<float>(mantissa), -24)
+                             : std::ldexp(static_cast<float>(1024 + mantissa), static_cast<int>(exponent) - 25);
+  return value & 0x8000 ? -result : result;
+}
+inline Pixel DecodePixel(const Pixel& p) { return p; }
+inline Pixel DecodePixel(const HalfPixel& p) {
+  return {DecodeHalf(p.r), DecodeHalf(p.g), DecodeHalf(p.b), DecodeHalf(p.a)};
+}
 
 inline bool SupportedColor(const ColorConfig& c) {
   return c.size == sizeof(c) && c.version == 1
@@ -58,15 +72,64 @@ inline uint16_t EncodePq(float nits) {
   return static_cast<uint16_t>(std::lround(std::pow((3424.0 / 4096.0 + 2413.0 / 128.0 * y)
       / (1.0 + 2392.0 / 128.0 * y), 2523.0 / 32.0) * 65535.0));
 }
-inline bool ConvertPixels(std::span<const Pixel> pixels, uint32_t width, uint32_t height,
+// BT.2390-style PQ-domain highlight compression, with reference-white adaptation.
+// Normalize the HDR reference white to 100 nits before mapping to 100-nit SDR:
+// never treat HDR absolute luminance as SDR-relative brightness.
+struct SdrMapper {
+  double peak, pq_peak, knee, target;
+  static double Pq(double nits) {
+    const double p=std::pow(std::max(nits,0.)/10000.,2610./16384.);
+    return std::pow((3424./4096.+2413./128.*p)/(1.+2392./128.*p),2523./32.);
+  }
+  static double Nits(double pq) {
+    const double p=std::pow(std::max(pq,0.),32./2523.);
+    return 10000.*std::pow(std::max(p-3424./4096.,0.)/(2413./128.-2392./128.*p),16384./2610.);
+  }
+  explicit SdrMapper(const ColorConfig& c) : peak(std::max(1.,static_cast<double>(c.peak_nits)/c.white_nits)),
+      pq_peak(Pq(100.*peak)), target(Pq(100.)/pq_peak) {
+    knee=2.*target-1.;
+  }
+  double MapLuminance(double value) const {
+    if (value<=0.) return 0.;
+    if (peak<=1.) return std::min(value,1.);
+    const double x=Pq(std::min(value,peak)*100.)/pq_peak;
+    if (x<=knee) return value;
+    const double t=std::clamp((x-knee)/(1.-knee),0.,1.);
+    // Cubic Hermite: unit slope at the knee, zero slope at the display peak.
+    const double mapped=knee+(1.-knee)*t
+        +(3.*target-knee-2.)*t*t+(1.+knee-2.*target)*t*t*t;
+    return std::clamp(Nits(mapped*pq_peak)/100.,0.,std::min(value,1.));
+  }
+  std::array<float,3> Apply(const std::array<float,3>& rgb) const {
+  const float luminance=.2126f*rgb[0]+.7152f*rgb[1]+.0722f*rgb[2];
+  if (luminance<=0.f) return {0.f,0.f,0.f};
+  const float mapped=MapLuminance(luminance);
+  // Compress chroma toward the mapped neutral axis, preserving luminance.
+  // This handles both negative and above-range channels without RGB clipping.
+  std::array<float,3> chroma;
+  float saturation=1.f;
+  for (size_t c=0;c<3;++c) {
+    chroma[c]=(rgb[c]/luminance-1.f)*mapped;
+    if (chroma[c]>0.f) saturation=std::min(saturation,(1.f-mapped)/chroma[c]);
+    else if (chroma[c]<0.f) saturation=std::min(saturation,-mapped/chroma[c]);
+  }
+  return {mapped+chroma[0]*saturation,mapped+chroma[1]*saturation,mapped+chroma[2]*saturation};
+}
+};
+inline std::array<float,3> ToSdr(const std::array<float,3>& rgb,const ColorConfig& config) {
+  return SdrMapper(config).Apply(rgb);
+}
+template <typename StoredPixel>
+inline bool ConvertStoredPixels(std::span<const StoredPixel> pixels, uint32_t width, uint32_t height,
                           const ColorConfig& config, std::vector<uint16_t>* hdr, std::vector<uint8_t>* sdr) {
   if (!SupportedColor(config) || !width || !height || width > 16384 || height > 16384
       || static_cast<uint64_t>(width) * height > 67108864
       || pixels.size() != static_cast<size_t>(width) * height) return false;
+  const SdrMapper sdr_mapper(config);
   hdr->resize(pixels.size() * 3); sdr->resize(pixels.size() * 4);
   for (uint32_t y = 0; y < height; ++y) for (uint32_t x = 0; x < width; ++x) {
     // Unity ReadPixels/GetPixels starts at the bottom left; PNG starts at the top.
-    const auto& p = pixels[static_cast<size_t>(height - 1 - y) * width + x];
+    const auto p = DecodePixel(pixels[static_cast<size_t>(height - 1 - y) * width + x]);
     if (!std::isfinite(p.r) || !std::isfinite(p.g) || !std::isfinite(p.b)) return false;
     const size_t i = static_cast<size_t>(y) * width + x;
     const auto capture = config.tech_test_look > 0.5f ? CalibrateCapture(p) : std::array<float, 3>{p.r,p.g,p.b};
@@ -76,23 +139,26 @@ inline bool ConvertPixels(std::span<const Pixel> pixels, uint32_t width, uint32_
         0.627403896f * rgb[0] + 0.329283038f * rgb[1] + 0.043313066f * rgb[2],
         0.069097289f * rgb[0] + 0.919540395f * rgb[1] + 0.011362316f * rgb[2],
         0.016391439f * rgb[0] + 0.088013308f * rgb[1] + 0.895595253f * rgb[2]};
-    // SDR companion: preserve shadows through 18% gray, then use a C1-continuous
-    // Reinhard shoulder. A shared RGB scale preserves chromaticity and leaves
-    // substantially more highlight separation than the former exponential rolloff.
-    const float maximum = std::max({rgb[0], rgb[1], rgb[2], 0.f});
-    const float mapped = maximum <= 0.18f ? maximum : 0.18f + 0.82f * (maximum - 0.18f) / (maximum - 0.18f + 0.82f);
-    const float scale = maximum > 0.f ? mapped / maximum : 0.f;
+    const auto sdr_rgb=sdr_mapper.Apply(rgb);
     // Match SwapChainPass: one scale preserves highlight RGB ratios at the peak.
     const float hdr_scale = config.white_nits * config.peak_nits
         / std::max({wide[0] * config.white_nits, wide[1] * config.white_nits,
                     wide[2] * config.white_nits, config.peak_nits});
     for (size_t c = 0; c < 3; ++c) {
       (*hdr)[i * 3 + c] = EncodePq(std::max(wide[c] * hdr_scale, 0.f));
-      (*sdr)[i * 4 + c] = static_cast<uint8_t>(std::lround(std::clamp(SrgbEncode(std::max(rgb[c] * scale, 0.f)), 0.f, 1.f) * 255.f));
+      (*sdr)[i * 4 + c] = static_cast<uint8_t>(std::lround(std::clamp(SrgbEncode(std::max(sdr_rgb[c], 0.f)), 0.f, 1.f) * 255.f));
     }
     (*sdr)[i * 4 + 3] = 255;
   }
   return true;
+}
+inline bool ConvertPixels(std::span<const Pixel> pixels, uint32_t width, uint32_t height,
+                          const ColorConfig& config, std::vector<uint16_t>* hdr, std::vector<uint8_t>* sdr) {
+  return ConvertStoredPixels(pixels,width,height,config,hdr,sdr);
+}
+inline bool ConvertPixels(std::span<const HalfPixel> pixels, uint32_t width, uint32_t height,
+                          const ColorConfig& config, std::vector<uint16_t>* hdr, std::vector<uint8_t>* sdr) {
+  return ConvertStoredPixels(pixels,width,height,config,hdr,sdr);
 }
 inline bool WriteHdrPng(const std::filesystem::path& path, uint32_t width, uint32_t height,
                         std::span<const uint16_t> pixels) {
