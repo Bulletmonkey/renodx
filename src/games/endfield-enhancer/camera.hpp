@@ -24,6 +24,7 @@ inline float first_person = 0.f, eye_height = 0.05f, eye_forward = 0.03f, first_
 inline float extend_look_range = 0.f;
 inline float first_person_movement = 0.f;
 inline float side_look_limit = 60.f;
+inline float first_person_dialogue = 0.f;
 inline bool unavailable = false;
 inline float hide_head=0.f, fill_neck_hole=0.f;
 inline std::atomic_int status = 0;
@@ -36,6 +37,7 @@ struct Values {
   float look_up_range, look_down_range, first_person_fov;
   bool first_person_movement;
   float side_look_limit;
+  bool first_person_dialogue;
 };
 inline Values values{};
 inline SRWLOCK values_lock = SRWLOCK_INIT;
@@ -77,6 +79,8 @@ inline void* Invoke(Il2CppMethod method, void* object, void** args = nullptr) {
   void* result = runtime_invoke(method, object, args, &exception);
   return exception ? nullptr : result;
 }
+#include "./camera_dialogue.hpp"
+
 // Called only by native camera callbacks on the game thread. No cached unrooted objects.
 inline void* Context(const Values& v, void** manager = nullptr) {
   if (!v.enabled || shutting_down.load(std::memory_order_relaxed)) return nullptr;
@@ -85,9 +89,10 @@ inline void* Context(const Values& v, void** manager = nullptr) {
   if (!instance) return nullptr;
   void* controller = Invoke(controller_method, instance);
   if (!controller) return nullptr;
-  void* klass = object_class(controller);
-  if (!((klass == photo_class && v.photo) || ((klass == level_class || klass == free_class) && v.gameplay))) return nullptr;
   if (manager) *manager = instance;
+  void* klass = object_class(controller);
+  if (!((klass == photo_class && v.photo) || ((klass == level_class || klass == free_class) && v.gameplay)
+        || (v.gameplay && v.first_person && v.first_person_dialogue && dialogue::Eligible(controller)))) return nullptr;
   return controller;
 }
 inline void ReleaseHead() {
@@ -161,6 +166,12 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   void* manager = nullptr;
   void* controller = Context(v, &manager);
   if (!controller) {
+    // Retain the incoming view while this interaction is preparing.
+    // Switching to any other unsupported camera invalidates it immediately.
+    void* pending = manager ? Invoke(controller_method, manager) : nullptr;
+    if (!pending || object_class(pending) != dialogue::controller_class
+        || !v.first_person || !v.first_person_dialogue)
+      dialogue::ResetView();
     movement::Update(false, {});
     mesh_runtime::UpdateBinding(false);
     if (head_root || model_root) ReleaseHead();
@@ -181,7 +192,9 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   const Vec3 correction = Read<Vec3>(state, 0xac);
   Quat orientation = Read<Quat>(state, 0x8c);
   const Quat rotation_correction = Read<Quat>(state, 0xb8);
+  const bool conversation = object_class(controller) == dialogue::controller_class;
   if (!Finite(position) || !Finite(correction) || !Unit(orientation) || !Unit(rotation_correction)) {
+    dialogue::ResetView();
     movement::Update(false, {});
     mesh_runtime::UpdateBinding(false);
     if (head_root || model_root) ReleaseHead();
@@ -196,10 +209,30 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   Vec3 eyes{};
   if (first_person_head) position_injected(first_person_head, &eyes);
   const bool valid_first_person = first_person_head && Finite(eyes);
+  if (conversation && !valid_first_person) {
+    dialogue::Report("eligible chat, but the player head position is unavailable");
+    dialogue::ResetView();
+    movement::Release();
+    mesh_runtime::UpdateBinding(false);
+    ReleaseHead();
+    uncensor::force_body_visible.store(false, std::memory_order_relaxed);
+    push_state(brain, state, method);
+    return;
+  }
   orientation = AxisAngle({0, 1, 0}, v.yaw) * orientation;
   const float extra_pitch = valid_first_person
       ? ExpandLookPitch(orientation * rotation_correction, v.look_up_range, v.look_down_range) : 0.f;
-  const Quat adjusted_correction = rotation_correction * AxisAngle({1, 0, 0}, v.pitch + extra_pitch);
+  Quat adjusted_correction = rotation_correction * AxisAngle({1, 0, 0}, v.pitch + extra_pitch);
+  const bool restored_dialogue_view = !conversation && valid_first_person && v.first_person_dialogue
+      && (object_class(controller) == level_class || object_class(controller) == free_class)
+      && dialogue::HoldExitView(controller, brain);
+  if (conversation || restored_dialogue_view) {
+    orientation = dialogue::saved_view;
+    adjusted_correction = {0, 0, 0, 1};
+  }
+  if (conversation) {
+    dialogue::was_conversation = true;
+  }
   const Quat view = orientation * adjusted_correction;
   const Vec3 right = Rotate(view, {1, 0, 0});
   const Vec3 forward = Rotate(view, {0, 0, 1});
@@ -232,7 +265,7 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
     if (head_root || model_root) ReleaseHead();
     status.store(1, std::memory_order_relaxed);
   }
-  movement::Update((first_person_active && v.first_person_movement)
+  movement::Update((first_person_active && v.first_person_movement && !conversation)
                        && object_class(controller) != photo_class,
                    forward, v.side_look_limit);
   if (first_person_active) {
@@ -254,6 +287,16 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   Write(copy.data(), 0xb8, adjusted_correction);
   Write(copy.data(), 0x30, Read<float>(state, 0x30) + v.roll);
   Write(copy.data(), 0x20, first_person_active ? v.first_person_fov : v.fov);
+  if (!conversation && !restored_dialogue_view) {
+    dialogue::have_view = first_person_active && v.first_person_dialogue
+        && (object_class(controller) == level_class || object_class(controller) == free_class);
+    if (dialogue::have_view) {
+      dialogue::saved_view = view;
+      dialogue::CaptureAngles(controller);
+    } else {
+      dialogue::ResetView();
+    }
+  }
   push_state(brain, copy.data(), method);
 }
 inline float HookedParamMax(void* param, MethodInfo* method) {
@@ -327,6 +370,10 @@ inline bool Resolve() {
   const auto cine = FindImage("Cinemachine.dll");
   const auto unity = FindImage("UnityEngine.CoreModule.dll");
   if (!game || !cine || !unity || !position_injected) return false;
+  dialogue::available = dialogue::Resolve(game, field_flags, class_from_type, return_type);
+  Log(reshade::log::level::info, dialogue::available
+      ? "Endfield enhancer: first-person conversation API resolved"
+      : "Endfield enhancer: first-person conversation API resolution failed");
   auto state_class = class_from_name(cine, "Cinemachine", "CameraState");
   auto lens_class = class_from_name(cine, "Cinemachine", "LensSettings");
   auto param_class = class_from_name(game, "Beyond.Gameplay.View", "CameraControlParam");
@@ -420,7 +467,7 @@ inline void OnPresent() {
             clamp(eye_height,-0.5f,0.5f,0.05f), clamp(eye_forward,0,0.5f,0.03f),
             extend_look_range >= 0.5f ? 1.10f : 1.f, extend_look_range >= 0.5f ? 1.50f : 1.f,
             clamp(first_person_fov,20,120,60), first_person_movement >= 0.5f,
-            clamp(side_look_limit,0,90,60)};
+            clamp(side_look_limit,0,90,60), first_person_dialogue >= .5f};
   ReleaseSRWLockExclusive(&values_lock);
   if (installed || unavailable || enabled < 0.5f || shutting_down.load(std::memory_order_relaxed)) return;
   if (present_count != 1 && present_count % 120 != 0) return;
@@ -456,7 +503,7 @@ inline void Shutdown() {
       return;
     }
   }
-  if (UpdateHooks(false)) { installed = false; ReleaseHead(); }
+  if (UpdateHooks(false)) { installed = false; ReleaseHead(); dialogue::ResetView(); }
   else Log(reshade::log::level::error, "Endfield enhancer: Camera hook detach failed.");
 }
 }  // namespace endfield::camera

@@ -402,6 +402,17 @@ renodx::utils::settings::Settings settings = {
         .is_enabled = [] { return !endfield::camera::unavailable; },
     },
     new renodx::utils::settings::Setting{
+        .key = "CameraFirstPersonDialogue",
+        .binding = &endfield::camera::first_person_dialogue,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "First Person Conversations",
+        .section = "First Person",
+        .tooltip = "Stay in first person during supported NPC chats.",
+        .labels = {"Off", "On"},
+        .is_enabled = [] { return !endfield::camera::unavailable && endfield::camera::first_person >= .5f && endfield::camera::detail::dialogue::available; },
+    },
+    new renodx::utils::settings::Setting{
         .key = "CameraSideLookLimit",
         .binding = &endfield::camera::side_look_limit,
         .default_value = 60.f,

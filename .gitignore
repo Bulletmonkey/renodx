@@ -67,3 +67,6 @@ tests/
 
 # Local DevKit regression fixtures
 /test/devkit_resource_analysis/
+
+# Local Endfield camera validation
+/src/games/endfield-enhancer/validation/
