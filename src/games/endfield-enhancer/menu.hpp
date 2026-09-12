@@ -104,7 +104,7 @@ inline void Draw(const renodx::utils::settings::Settings& settings) {
                        [](unsigned char a, unsigned char b) { return std::tolower(a) == std::tolower(b); }) != text.end() || search[0] == 0;
   };
   static int page = 0;
-  constexpr const char* pages[] = {"FPS Limiter", "Graphics", "Entities", "Screenshots", "Patches", "System", "Camera"};
+  constexpr const char* pages[] = {"FPS Limiter", "Graphics", "Entities", "Screenshots", "Patches", "System", "Camera", "UI"};
   constexpr const char* descriptions[] = {
       "FPS unlock and limits for gameplay, frame generation and background use.",
       "Rendering resolution, geometry detail and depth of field.",
@@ -112,7 +112,8 @@ inline void Draw(const renodx::utils::settings::Settings& settings) {
       "HDR photo output and photo frame removal.",
       "HDR frame-generation compatibility and uncensor options.",
       "Runtime information and addon credits.",
-      "Camera position, rotation, zoom range and body-visible first person."};
+      "Camera position, rotation, zoom range and body-visible first person.",
+      "Hide game UI, UID, latency bar and ping during gameplay, menus and conversations."};
   constexpr struct {
     const char* name;
     int page;
@@ -128,6 +129,7 @@ inline void Draw(const renodx::utils::settings::Settings& settings) {
       {"Entity Population & Distance", 2, false}, {"NPC Culling", 2, true},
       {"NPC Loading", 2, true}, {"NPC Unloading (Experimental)", 2, true},
       {"Screenshots", 3, false},
+      {"UI Visibility", 7, false},
       {"DLSS-G HDR Patch", 4, false}, {"Uncensor", 4, false},
       {"Runtime Information", 5, false}, {"About", 5, true}};
 

@@ -21,6 +21,7 @@
 #include "./runtime_status.hpp"
 #include "./menu.hpp"
 #include "./screenshots.hpp"
+#include "./ui_visibility.hpp"
 #include "./vulkan_loader_api.hpp"
 
 namespace {
@@ -471,6 +472,126 @@ renodx::utils::settings::Settings settings = {
         .labels = {"Off", "On"},
         .tint = kVisualTint,
         .is_enabled = [] { return kScreenshotSupport && !endfield::screenshots::unavailable; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "HideUI",
+        .binding = &endfield::ui_visibility::hide_all,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Hide UI",
+        .section = "UI Visibility",
+        .tooltip = "Hides the game UI, including UID, latency bar and ping. The ReShade overlay stays available to restore it.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+        .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "HideUID",
+        .binding = &endfield::ui_visibility::hide_uid,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Hide UID",
+        .section = "UI Visibility",
+        .tooltip = "Hides only the on-screen UID. This choice remains set when Hide UI is turned off.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+        .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "HideLatencyBar",
+        .binding = &endfield::ui_visibility::hide_bar,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Hide Latency Bar",
+        .section = "UI Visibility",
+        .tooltip = "Hides the connection-quality bar independently of the numeric ping and UID.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+        .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "HidePing",
+        .binding = &endfield::ui_visibility::hide_ping,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Hide Ping",
+        .section = "UI Visibility",
+        .tooltip = "Hides the numeric ping in milliseconds independently of the connection-quality bar and UID.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+        .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "HideQuestLog",
+        .binding = &endfield::ui_visibility::hide_quest,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Hide Quest Log",
+        .section = "UI Visibility",
+        .tooltip = "Hides the on-screen quest tracker while preserving the quest-menu shortcut.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+        .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "HideMap",
+        .binding = &endfield::ui_visibility::hide_map,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Hide Map",
+        .section = "UI Visibility",
+        .tooltip = "Hides the HUD minimap independently of its surrounding buttons. The full-screen map remains available.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+        .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "HideMapButtons",
+        .binding = &endfield::ui_visibility::hide_map_buttons,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Hide Map Buttons",
+        .section = "UI Visibility",
+        .tooltip = "Hides the top-left HUD buttons and the quest and chat shortcuts around the minimap.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+        .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "HideMenuButtons",
+        .binding = &endfield::ui_visibility::hide_menu_buttons,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Hide Menu Buttons",
+        .section = "UI Visibility",
+        .tooltip = "Hides the top-right HUD menu buttons. Menu shortcuts remain usable.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+        .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "HideUtilityWheel",
+        .binding = &endfield::ui_visibility::hide_utility,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Hide Utility Wheel Button",
+        .section = "UI Visibility",
+        .tooltip = "Hides the HUD utility button and its key hint. The opened utility wheel stays visible and usable.",
+        .labels = {"Off", "On"},
+        .tint = kVisualTint,
+        .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "UI visibility unavailable; the game UI will be restored automatically.",
+        .section = "UI Visibility",
+        .is_visible = [] { return endfield::ui_visibility::unavailable.load(); },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "Waiting for the game's UI runtime...",
+        .section = "UI Visibility",
+        .is_visible = [] { return endfield::ui_visibility::status.load() == 1 || endfield::ui_visibility::status.load() == 2; },
     },
     new renodx::utils::settings::Setting{
         .key = "RemovePhotoFrame",
@@ -1071,6 +1192,7 @@ void OnPresent(
   endfield::enhancer::OnPresent(swapchain == nullptr ? nullptr : swapchain->get_device());
   endfield::uncensor::OnPresent();
   endfield::camera::OnPresent();
+  endfield::ui_visibility::OnPresent();
   endfield::ssr_resolve::OnPresent(
       endfield::enhancer::ssr_resolution == 1.f,
       endfield::enhancer::ssr_resolution == 1.f
@@ -1149,6 +1271,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
       endfield::npc_loading::Shutdown();
       endfield::npc_distance::Shutdown();
       endfield::lod::Shutdown();
+      endfield::ui_visibility::Shutdown();
       endfield::camera::Shutdown();
       endfield::enhancer::Shutdown();
       endfield::uncensor::Shutdown();
