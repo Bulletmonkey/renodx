@@ -104,19 +104,24 @@ inline void Draw(const renodx::utils::settings::Settings& settings) {
                        [](unsigned char a, unsigned char b) { return std::tolower(a) == std::tolower(b); }) != text.end() || search[0] == 0;
   };
   static int page = 0;
-  constexpr const char* pages[] = {"FPS Limiter", "Graphics", "Entities", "Screenshots", "Patches", "System"};
+  constexpr const char* pages[] = {"FPS Limiter", "Graphics", "Entities", "Screenshots", "Patches", "System", "Camera"};
   constexpr const char* descriptions[] = {
       "FPS unlock and limits for gameplay, frame generation and background use.",
       "Rendering resolution, geometry detail and depth of field.",
       "Entity population, draw distances, visibility and loading.",
       "HDR photo output and photo frame removal.",
       "HDR frame-generation compatibility and uncensor options.",
-      "Runtime information and addon credits."};
+      "Runtime information and addon credits.",
+      "Camera position, rotation, zoom range and body-visible first person."};
   constexpr struct {
     const char* name;
     int page;
     bool advanced;
   } sections[] = {
+      {"Camera Controls", 6, false},
+      {"Camera Position", 6, false},
+      {"Camera Rotation", 6, false},
+      {"First Person", 6, false},
       {"FPS Limit", 0, false},
       {"Ambient Occlusion", 1, false}, {"Screen Space Reflections", 1, false}, {"Geometry", 1, false},
       {"Depth of Field", 1, false},

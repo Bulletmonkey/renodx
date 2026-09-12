@@ -8,6 +8,7 @@
 namespace endfield::uncensor {
 inline float enabled = 0.f;
 inline std::atomic_bool active = false;
+inline std::atomic_bool force_body_visible = false;
 inline bool installed = false;
 inline bool unavailable = false;
 inline std::array<uint8_t, 19> installed_entry{};
@@ -62,7 +63,7 @@ inline bool ValidateTargets(const uint8_t* base, const void* pitch, const void* 
 inline void HookedProcessPitch(void* camera, enhancer::detail::MethodInfo* method) {
   process_pitch(camera, method);
   // Clear on the game's camera thread, after its original update.
-  if (camera != nullptr && active.load(std::memory_order_relaxed)
+  if (camera != nullptr && (active.load(std::memory_order_relaxed) || force_body_visible.load(std::memory_order_relaxed))
       && !enhancer::detail::shutting_down.load(std::memory_order_relaxed)) {
     reinterpret_cast<CameraMethod>(clear_method->method_pointer)(camera, clear_method);
   }
@@ -116,7 +117,7 @@ inline bool UpdateHook(bool attach) {
 inline void OnPresent() {
   using namespace enhancer::detail;
   active.store(enabled >= 0.5f && !unavailable, std::memory_order_relaxed);
-  if (shutting_down.load(std::memory_order_relaxed) || enabled < 0.5f
+  if (shutting_down.load(std::memory_order_relaxed) || (enabled < 0.5f && !force_body_visible.load(std::memory_order_relaxed))
       || installed || unavailable || (present_count != 1 && present_count % 120 != 0)) return;
   if (!ResolveApi()) return;
   Il2CppImage image = FindImage("Gameplay.Beyond.dll");
