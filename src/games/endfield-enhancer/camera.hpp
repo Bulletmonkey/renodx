@@ -4,6 +4,7 @@
 #include <intrin.h>
 #include <unordered_map>
 #include <stdexcept>
+#include <utility>
 #include "./runtime_status.hpp"
 #include "./camera_mesh.hpp"
 #include <array>
@@ -21,6 +22,8 @@ inline float height = 0.f, horizontal = 0.f, distance = 0.f;
 inline float pitch = 0.f, yaw = 0.f, roll = 0.f, fov = 60.f, zoom_limit = 1.f;
 inline float first_person = 0.f, eye_height = 0.05f, eye_forward = 0.03f, first_person_fov = 60.f;
 inline float extend_look_range = 0.f;
+inline float first_person_movement = 0.f;
+inline float side_look_limit = 60.f;
 inline bool unavailable = false;
 inline float hide_head=0.f, fill_neck_hole=0.f;
 inline std::atomic_int status = 0;
@@ -31,6 +34,8 @@ struct Values {
   bool enabled, gameplay, photo, first_person, hide_head, fill_neck_hole;
   float height, horizontal, distance, pitch, yaw, roll, fov, zoom_limit, eye_height, eye_forward;
   float look_up_range, look_down_range, first_person_fov;
+  bool first_person_movement;
+  float side_look_limit;
 };
 inline Values values{};
 inline SRWLOCK values_lock = SRWLOCK_INIT;
@@ -149,12 +154,14 @@ inline void Write(void* state, size_t offset, T value) {
 }
 
 #include "./camera_mesh_runtime.hpp"
+#include "./camera_movement.hpp"
 
 inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   const Values v = ReadValues();
   void* manager = nullptr;
   void* controller = Context(v, &manager);
   if (!controller) {
+    movement::Update(false, {});
     mesh_runtime::UpdateBinding(false);
     if (head_root || model_root) ReleaseHead();
     uncensor::force_body_visible.store(false, std::memory_order_relaxed);
@@ -175,6 +182,7 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   Quat orientation = Read<Quat>(state, 0x8c);
   const Quat rotation_correction = Read<Quat>(state, 0xb8);
   if (!Finite(position) || !Finite(correction) || !Unit(orientation) || !Unit(rotation_correction)) {
+    movement::Update(false, {});
     mesh_runtime::UpdateBinding(false);
     if (head_root || model_root) ReleaseHead();
     uncensor::force_body_visible.store(false, std::memory_order_relaxed);
@@ -223,6 +231,19 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   } else {
     if (head_root || model_root) ReleaseHead();
     status.store(1, std::memory_order_relaxed);
+  }
+  movement::Update((first_person_active && v.first_person_movement)
+                       && object_class(controller) != photo_class,
+                   forward, v.side_look_limit);
+  if (first_person_active) {
+    // Visual facing can move the animated head around the model pivot. Anchor
+    // the submitted camera to its updated position in this same frame.
+    position_injected(first_person_head, &eyes);
+    if (Finite(eyes)) {
+      const float length = std::hypot(forward.x, forward.z);
+      const Vec3 planar = length > .001f ? Vec3{forward.x/length, 0, forward.z/length} : Vec3{0, 0, 1};
+      position = eyes + Vec3{-correction.x, v.eye_height-correction.y, -correction.z} + planar*v.eye_forward;
+    }
   }
   mesh_runtime::UpdateBinding(first_person_active && v.hide_head);
   uncensor::force_body_visible.store(first_person_active, std::memory_order_relaxed);
@@ -374,6 +395,7 @@ inline bool Resolve() {
     }
     if (matches != 1) return false;
   }
+  if (!movement::Resolve(game, value_size, class_from_type)) return false;
   if (!mesh_runtime::ResolveCloneAwake(icall)) return false;
   entries[3] = reinterpret_cast<void*>(mesh_runtime::native_awake);
   push_state = reinterpret_cast<PushState>(entries[0]);
@@ -397,7 +419,8 @@ inline void OnPresent() {
             fov, clamp(zoom_limit,1,5,1),
             clamp(eye_height,-0.5f,0.5f,0.05f), clamp(eye_forward,0,0.5f,0.03f),
             extend_look_range >= 0.5f ? 1.10f : 1.f, extend_look_range >= 0.5f ? 1.50f : 1.f,
-            clamp(first_person_fov,20,120,60)};
+            clamp(first_person_fov,20,120,60), first_person_movement >= 0.5f,
+            clamp(side_look_limit,0,90,60)};
   ReleaseSRWLockExclusive(&values_lock);
   if (installed || unavailable || enabled < 0.5f || shutting_down.load(std::memory_order_relaxed)) return;
   if (present_count != 1 && present_count % 120 != 0) return;
@@ -421,6 +444,12 @@ inline void Shutdown() {
   ReleaseSRWLockExclusive(&values_lock);
   uncensor::force_body_visible.store(false, std::memory_order_relaxed);
   if (!installed) return;
+  // Unity controller setters must run on the camera's game thread. Normal
+  // toggle-off cleanup happens there; process teardown must not call them from
+  // an arbitrary loader thread. Main-thread unload can restore immediately.
+  if (movement::game_thread.load() == GetCurrentThreadId()) movement::Release();
+  else if (movement::attached)
+    Log(reshade::log::level::warning, "Endfield enhancer: off-thread unload with first-person facing active; disable Camera Controls before hot-unloading.");
   for (size_t i = 0; i < entries.size(); ++i) {
     if (std::memcmp(entries[i], patched[i].data(), patched[i].size())) {
       Log(reshade::log::level::error, "Endfield enhancer: Camera hook changed; refusing to overwrite another patch.");

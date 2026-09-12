@@ -31,6 +31,21 @@ inline float ExpandLookPitch(Quat view, float up, float down) {
   return range == 1.f ? 0.f : std::clamp(pitch * range, -89.f, 89.f) - pitch;
 }
 inline bool Finite(Vec3 v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); }
+// Visual yaw only. Normalized world input gives symmetric side/diagonal angles
+// regardless of camera yaw or analog input strength. Backward motion keeps a
+// 45-degree angle opposite lateral input (back-right faces front-left and vice
+// versa). Straight backward stays centered, independent of idle free look.
+inline float LateralFacingYaw(Vec3 move, Vec3 view) {
+  const float length = std::hypot(move.x,move.z)*std::hypot(view.x,view.z);
+  if (!Finite(move) || !Finite(view) || length < .001f) return 0.f;
+  const float side = std::clamp((move.x*view.z-move.z*view.x)/length,-1.f,1.f);
+  if (move.x*view.x + move.z*view.z < 0.f) {
+    // Use the straight-back sector of an eight-way input layout (22.5 degrees
+    // each way). Movement and camera updates need not have identical headings.
+    return std::abs(side) > .382683432f ? std::copysign(45.f, -side) : 0.f;
+  }
+  return 45.f*side;
+}
 struct Bounds { Vec3 center, extents; };
 inline bool NearHeadAccessory(const Bounds& bounds, Vec3 head) {
   if (!Finite(bounds.center) || !Finite(bounds.extents) || !Finite(head)) return false;
