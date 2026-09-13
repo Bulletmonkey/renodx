@@ -5,10 +5,17 @@ namespace dialogue {
 inline void* controller_class = nullptr;
 inline void* manager_field = nullptr;
 inline void* type_field = nullptr;
+inline void* main_entity_field = nullptr;
 inline int normal_type = -1;
 inline void (*field_get)(void*, void*, void*) = nullptr;
 inline Il2CppMethod playing, preparing, timeline, interact_controller;
+inline Il2CppMethod interact_npc;
+inline Il2CppMethod npc_model, npc_model_go;
+inline Il2CppMethod (*virtual_method)(void*, Il2CppMethod) = nullptr;
+inline const char* focus_result = nullptr;
 inline Il2CppMethod camera_param, horizontal, vertical, set_horizontal, set_vertical;
+inline Il2CppMethod camera_config, evaluate_curve;
+inline void* pitch_to_vertical = nullptr;
 inline Il2CppMethod level_camera;
 inline Il2CppMethod active_blend;
 inline void* blend_class = nullptr;
@@ -30,8 +37,82 @@ inline bool available = false;
 inline bool have_view = false;
 inline Quat saved_view{0, 0, 0, 1};
 inline const char* last_result = nullptr;
+inline uint32_t focus_npc_root = 0, focus_model_root = 0, focus_head_root = 0;
+inline bool focus_started = false;
+inline double focus_start = 0;
+inline Quat focus_view{0, 0, 0, 1};
+
+inline void ResetFocus() {
+  for (uint32_t root : {focus_head_root, focus_model_root, focus_npc_root})
+    if (root) gc_free(root);
+  focus_head_root = focus_model_root = focus_npc_root = 0;
+  focus_started = false;
+  focus_result = nullptr;
+}
+
+inline Quat Focus(void* controller, Vec3 camera_position, double now) {
+  if (!focus_npc_root) {
+    void* manager = nullptr;
+    static_get(manager_field, &manager);
+    if (manager && Invoke(interact_controller, manager) == controller) {
+      if (void* npc = Invoke(interact_npc, manager)) focus_npc_root = gc_new(npc, false);
+    }
+  }
+  void* npc = focus_npc_root ? gc_target(focus_npc_root) : nullptr;
+  // Crowd NPCs implement IModelComponent through their NPC component rather
+  // than Entity.modelCom. Dispatch GetModelGo on that concrete implementation.
+  void* model = npc ? Invoke(npc_model, npc) : nullptr;
+  void* go = model ? Invoke(virtual_method(model, npc_model_go), model) : nullptr;
+  if (!focus_model_root || gc_target(focus_model_root) != go) {
+    if (focus_head_root) gc_free(focus_head_root);
+    if (focus_model_root) gc_free(focus_model_root);
+    focus_head_root = 0;
+    focus_model_root = go ? gc_new(go, false) : 0;
+  }
+  if (focus_model_root && !focus_head_root) focus_head_root = FindHead(gc_target(focus_model_root));
+  void* head = focus_head_root ? gc_target(focus_head_root) : nullptr;
+  Vec3 target{};
+  Quat desired{};
+  if (head) position_injected(head, &target);
+  const bool valid = head && Finite(camera_position) && Finite(target)
+      && FacingRotation(target + camera_position * -1.f, {0, 1, 0}, &desired);
+  const char* result = !npc ? "interaction NPC unavailable" : !model ? "NPC model component unavailable"
+      : !go ? "NPC model object unavailable" : !head ? "NPC head unavailable"
+      : !valid ? "NPC head direction invalid" : "blending/tracking NPC head";
+  if (focus_result != result) {
+    focus_result = result;
+    Log(reshade::log::level::info, (std::string("Endfield enhancer: conversation focus: ") + result).c_str());
+  }
+  if (!valid)
+    return focus_started ? focus_view : saved_view;
+  // Retain the initiating NPC, independently of which actor is speaking.
+  // Start only once its head exists; model loading must not consume the blend.
+  if (!focus_started) {
+    focus_started = true;
+    focus_start = now;
+  }
+  const float t = static_cast<float>(std::clamp((now - focus_start) / .65, 0., 1.));
+  focus_view = BlendRotation(saved_view, desired, t*t*(3.f-2.f*t));
+  return focus_view;
+}
+
+inline void* Character(void* controller) {
+  if (available && controller && object_class(controller) == controller_class) {
+    void* manager = nullptr;
+    static_get(manager_field, &manager);
+    if (manager && Invoke(interact_controller, manager) == controller) {
+      // The game's dialogue positioning uses m_mainEntity, which can be a
+      // temporary Endministrator actor instead of the gameplay character.
+      void* character = nullptr;
+      field_get(manager, main_entity_field, &character);
+      if (character) return character;
+    }
+  }
+  return Invoke(character_method, nullptr);
+}
 
 inline void ResetView() {
+  ResetFocus();
   have_view = was_conversation = false;
   if (param_root) gc_free(param_root);
   param_root = 0;
@@ -53,7 +134,7 @@ inline void CaptureAngles(void* controller) {
   saved_vertical = y;
 }
 
-inline bool RestoreAngles(void* controller) {
+inline bool RestoreAngles(void* controller, float pitch_offset = 0.f, float look_up = 1.f, float look_down = 1.f) {
   if (!was_conversation) return false;
   was_conversation = false;
   void* param = Invoke(camera_param, controller);
@@ -63,6 +144,21 @@ inline bool RestoreAngles(void* controller) {
   if (!old_h || !old_v) { ResetView(); return false; }
   float original_h = *static_cast<float*>(object_unbox(old_h)), original_v = *static_cast<float*>(object_unbox(old_v));
   if (!std::isfinite(original_h) || !std::isfinite(original_v)) { ResetView(); return false; }
+  if (focus_started) {
+    const Vec3 before = Rotate(saved_view, {0, 0, 1}), after = Rotate(focus_view, {0, 0, 1});
+    float pitch = -std::atan2(after.y, std::hypot(after.x, after.z)) * 57.295779513f - pitch_offset;
+    pitch /= pitch < 0.f ? look_up : look_down;
+    void* config = Invoke(camera_config, controller);
+    void* curve = nullptr;
+    if (config) field_get(config, pitch_to_vertical, &curve);
+    void* args[]{&pitch};
+    void* value = curve ? Invoke(evaluate_curve, curve, args) : nullptr;
+    if (!value || !std::isfinite(*static_cast<float*>(object_unbox(value)))) { ResetView(); return false; }
+    saved_horizontal += std::remainder((std::atan2(after.x, after.z) - std::atan2(before.x, before.z)) * 57.295779513f, 360.f);
+    saved_vertical = *static_cast<float*>(object_unbox(value));
+    saved_view = focus_view;
+  }
+  ResetFocus();
   // Use the game's immediate angle setters: they update both target/current
   // values and stop the angle tween without touching zoom or gameplay facing.
   bool tween = false;
@@ -104,9 +200,9 @@ inline bool CompleteGameplayBlend(void* blend, void* camera) {
   return true;
 }
 
-inline bool HoldExitView(void* controller, void* brain) {
+inline bool HoldExitView(void* controller, void* brain, float pitch_offset = 0.f, float look_up = 1.f, float look_down = 1.f) {
   const bool exiting = was_conversation;
-  if (!RestoreAngles(controller)) {
+  if (!RestoreAngles(controller, pitch_offset, look_up, look_down)) {
     if (exiting) Report("exit angle restore failed; camera parameters unavailable or changed");
     return false;
   }
@@ -196,6 +292,10 @@ inline bool Resolve(Il2CppImage game, int (*field_flags)(void*), void* (*class_f
   type_field = class_get_field_from_name(manager, "m_dialogType");
   const void* (*field_type)(void*) = nullptr;
   if (!type_field || !ResolveExport(GetModuleHandleW(L"GameAssembly.dll"), "il2cpp_field_get_type", &field_type)) return false;
+  main_entity_field = class_get_field_from_name(manager, "m_mainEntity");
+  if (!main_entity_field || (field_flags(main_entity_field) & 0x10)
+      || field_get_offset(main_entity_field) != 0x470
+      || class_from_type(field_type(main_entity_field)) != class_from_name(game, "Beyond.Gameplay.Core", "Entity")) return false;
   void* normal = class_get_field_from_name(class_from_type(field_type(type_field)), "Normal");
   if (!normal || !(field_flags(normal) & 0x10)) return false;
   static_get(normal, &normal_type);
@@ -204,7 +304,24 @@ inline bool Resolve(Il2CppImage game, int (*field_flags)(void*), void* (*class_f
   preparing = FindMethod(game, "Beyond.Gameplay.Core", "DialogManager", "get_isPreparing", 0);
   timeline = FindMethod(game, "Beyond.Gameplay.Core", "DialogManager", "get_playingTimeline", 0);
   interact_controller = FindMethod(game, "Beyond.Gameplay.Core", "DialogManager", "get_interactNpcCamController", 0);
+  interact_npc = FindMethod(game, "Beyond.Gameplay.Core", "DialogManager", "get_interactNpc", 0);
+  if (!interact_npc || class_from_type(return_type(interact_npc)) != class_from_name(game, "Beyond.Gameplay.Core", "Entity")) return false;
+  npc_model = FindMethod(game, "Beyond.Gameplay.Core", "Entity", "get_iModelCom", 0);
+  npc_model_go = FindMethod(game, "Beyond.Gameplay.View", "IModelComponent", "GetModelGo", 0);
+  if (!npc_model || !npc_model_go
+      || class_from_type(return_type(npc_model)) != class_from_name(game, "Beyond.Gameplay.View", "IModelComponent")
+      || class_from_type(return_type(npc_model_go)) != class_from_name(FindImage("UnityEngine.CoreModule.dll"), "UnityEngine", "GameObject")
+      || !ResolveExport(GetModuleHandleW(L"GameAssembly.dll"), "il2cpp_object_get_virtual_method", &virtual_method)) return false;
   camera_param = FindMethod(game, "Beyond.Gameplay.View", "LevelCameraController", "get_param", 0);
+  camera_config = FindMethod(game, "Beyond.Gameplay.View", "LevelCameraController", "get_config", 0);
+  const auto config_class = class_from_name(game, "Beyond.Gameplay.View", "CameraControlConfigRuntime");
+  const auto curve_class = class_from_name(FindImage("UnityEngine.CoreModule.dll"), "UnityEngine", "AnimationCurve");
+  evaluate_curve = FindMethod(FindImage("UnityEngine.CoreModule.dll"), "UnityEngine", "AnimationCurve", "Evaluate", 1);
+  pitch_to_vertical = config_class ? class_get_field_from_name(config_class, "pitchToVerticalValue") : nullptr;
+  if (!camera_config || !curve_class || !evaluate_curve || !pitch_to_vertical
+      || class_from_type(return_type(camera_config)) != config_class
+      || (field_flags(pitch_to_vertical) & 0x10)
+      || class_from_type(field_type(pitch_to_vertical)) != curve_class) return false;
   horizontal = FindMethod(game, "Beyond.Gameplay.View", "CameraControlParam", "get_currHorizontalAngle", 0);
   vertical = FindMethod(game, "Beyond.Gameplay.View", "CameraControlParam", "get_currVerticalValue", 0);
   set_horizontal = FindMethod(game, "Beyond.Gameplay.View", "CameraControlParam", "SetHorizontalAngle", 2);
@@ -252,6 +369,8 @@ inline bool Resolve(Il2CppImage game, int (*field_flags)(void*), void* (*class_f
   if (!core || !playing || !preparing || !timeline || !interact_controller || !camera_param
       || !horizontal || !vertical || !set_horizontal || !set_vertical || !level_camera
       || !ResolveExport(GetModuleHandleW(L"GameAssembly.dll"), "il2cpp_method_get_param", &parameter)) return false;
+  if (class_from_type(parameter(evaluate_curve, 0)) != class_from_name(core, "System", "Single")
+      || class_from_type(return_type(evaluate_curve)) != class_from_name(core, "System", "Single")) return false;
   for (auto setter : {set_horizontal, set_vertical})
     if (class_from_type(parameter(setter, 0)) != class_from_name(core, "System", "Single")
         || class_from_type(parameter(setter, 1)) != class_from_name(core, "System", "Boolean")) return false;

@@ -84,6 +84,7 @@ inline void* Invoke(Il2CppMethod method, void* object, void** args = nullptr) {
   void* result = runtime_invoke(method, object, args, &exception);
   return exception ? nullptr : result;
 }
+inline uint32_t FindHead(void* go);
 #include "./camera_dialogue.hpp"
 
 // Called only by native camera callbacks on the game thread. No cached unrooted objects.
@@ -108,8 +109,8 @@ inline void ReleaseHead() {
   head_root = model_root = 0;
   retry_head = 0;
 }
-inline void* Head() {
-  void* character = Invoke(character_method, nullptr);
+inline void* Head(void* controller) {
+  void* character = dialogue::Character(controller);
   void* model = character ? Invoke(model_method, character) : nullptr;
   void* go = model ? Invoke(model_go_method, model) : nullptr;
   if (!go) { ReleaseHead(); return nullptr; }
@@ -120,6 +121,11 @@ inline void* Head() {
   ReleaseHead();
   model_root = gc_new(go, false);
   if (!model_root) return nullptr;
+  head_root = FindHead(go);
+  return head_root ? gc_target(head_root) : nullptr;
+}
+inline uint32_t FindHead(void* go) {
+  uint32_t found = 0;
   // Inspect this character's own hierarchy only, once on model/character change.
   std::vector<uint32_t> pending;
   if (void* transform = Invoke(transform_method, go)) pending.push_back(gc_new(transform, false));
@@ -137,7 +143,7 @@ inline void* Head() {
       }
       if (text == L"head" || text == L"bip001 head" || text == L"bip001_head"
           || text == L"bip_head" || text == L"j_head" || text == L"head_m") {
-        head_root = root;
+        found = root;
         break;
       }
       if (void* count = Invoke(child_count_method, transform)) {
@@ -151,7 +157,7 @@ inline void* Head() {
     if (root) gc_free(root);
   }
   for (uint32_t root : pending) if (root) gc_free(root);
-  return head_root ? gc_target(head_root) : nullptr;
+  return found;
 }
 
 template <typename T>
@@ -219,13 +225,14 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   if (freecam::Apply(brain, state, method)) return;
   const bool native_photo_first_person = v.first_person && object_class(controller) == photo_class
       && Read<bool>(controller, native_first_person);
-  void* first_person_head = v.first_person && !native_photo_first_person ? Head() : nullptr;
+  void* first_person_head = v.first_person && !native_photo_first_person ? Head(controller) : nullptr;
   Vec3 eyes{};
   if (first_person_head) position_injected(first_person_head, &eyes);
   const bool valid_first_person = first_person_head && Finite(eyes);
   if (conversation && !valid_first_person) {
     dialogue::Report("eligible chat, but the player head position is unavailable");
-    dialogue::ResetView();
+    // A replacement actor's hierarchy can be unavailable while loading. Keep
+    // the saved view so eligibility and head lookup can recover next frame.
     movement::Release();
     mesh_runtime::UpdateBinding(false);
     ReleaseHead();
@@ -239,9 +246,9 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   Quat adjusted_correction = rotation_correction * AxisAngle({1, 0, 0}, v.pitch + extra_pitch);
   const bool restored_dialogue_view = !conversation && valid_first_person && v.first_person_dialogue
       && (object_class(controller) == level_class || object_class(controller) == free_class)
-      && dialogue::HoldExitView(controller, brain);
+      && dialogue::HoldExitView(controller, brain, v.pitch, v.look_up_range, v.look_down_range);
   if (conversation || restored_dialogue_view) {
-    orientation = dialogue::saved_view;
+    orientation = conversation && dialogue::focus_started ? dialogue::focus_view : dialogue::saved_view;
     adjusted_correction = {0, 0, 0, 1};
   }
   if (conversation) {
@@ -304,6 +311,10 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   uncensor::force_body_visible.store(first_person_active, std::memory_order_relaxed);
   position = position + Vec3{0, v.height, 0} + right * v.horizontal;
   if (!first_person_active) position = position + forward * -v.distance;
+  if (conversation && first_person_active) {
+    view = dialogue::Focus(controller, position + correction, GetTickCount64() * .001);
+    orientation = view;
+  }
   Write(copy.data(), 0x80, position);
   Write(copy.data(), 0x8c, orientation);
   Write(copy.data(), 0xb8, adjusted_correction);
