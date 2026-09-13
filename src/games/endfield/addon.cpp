@@ -1677,26 +1677,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             },
         };
 
-        {
-          auto* setting = new renodx::utils::settings::Setting{
-              .key = "SwapChainForceBorderless",
-              .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-              .default_value = 1.f,
-              .label = "Force Borderless",
-              .section = "Display Output",
-              .tooltip = "Forces fullscreen to be borderless for proper HDR",
-              .labels = {
-                  "Disabled",
-                  "Enabled",
-              },
-              .on_change_value = [](float previous, float current) { renodx::mods::swapchain::force_borderless = (current == 1.f); },
-              .is_global = true,
-              .is_visible = []() { return false; },
-          };
-          renodx::utils::settings::LoadSetting(renodx::utils::settings::global_name, setting);
-          renodx::mods::swapchain::force_borderless = (setting->GetValue() == 1.f);
-          settings.push_back(setting);
-        }
+        renodx::mods::swapchain::force_borderless = false;
 
         {
           auto* setting = new renodx::utils::settings::Setting{
