@@ -19,9 +19,10 @@
 #include "./world_distance.hpp"
 #include "./ssr_resolve.hpp"
 #include "./runtime_status.hpp"
-#include "./menu.hpp"
 #include "./screenshots.hpp"
 #include "./ui_visibility.hpp"
+#include "./shortcuts.hpp"
+#include "./menu.hpp"
 #include "./vulkan_loader_api.hpp"
 
 namespace {
@@ -215,6 +216,42 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "Applies to normal gameplay and photo cameras. Off restores the unmodified camera output.",
         .labels = {"Off", "On"},
         .is_enabled = [] { return !endfield::camera::unavailable; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "CameraFreePrototype",
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+        .label = "Free Camera",
+        .section = "Camera Controls",
+        .on_draw = [] {
+          namespace freecam = endfield::camera::detail::freecam;
+          bool enabled = freecam::requested.load();
+          ImGui::BeginDisabled(!freecam::available.load() || endfield::camera::enabled < .5f);
+          if (ImGui::Checkbox("Free Camera", &enabled)) freecam::requested.store(enabled);
+          ImGui::EndDisabled();
+          ImGui::TextWrapped("Move the mouse to look around. Opening the overlay pauses mouse look. Configure movement, speed boost and exit in Shortcuts > Freecam.");
+          return false;
+        },
+    },
+    endfield::shortcuts::Create("ShortcutFreeCamera", VK_F6, "Toggle Freecam", "Freecam Shortcuts"),
+    endfield::shortcuts::Create("ShortcutFreeExit", VK_ESCAPE, "Exit Freecam", "Freecam Shortcuts"),
+    endfield::shortcuts::Create("ShortcutFreeForward", 'W', "Move Forward", "Freecam Shortcuts"),
+    endfield::shortcuts::Create("ShortcutFreeBackward", 'S', "Move Backward", "Freecam Shortcuts"),
+    endfield::shortcuts::Create("ShortcutFreeLeft", 'A', "Move Left", "Freecam Shortcuts"),
+    endfield::shortcuts::Create("ShortcutFreeRight", 'D', "Move Right", "Freecam Shortcuts"),
+    endfield::shortcuts::Create("ShortcutFreeDown", 'Q', "Move Down", "Freecam Shortcuts"),
+    endfield::shortcuts::Create("ShortcutFreeUp", 'E', "Move Up", "Freecam Shortcuts"),
+    endfield::shortcuts::Create("ShortcutFreeBoost", VK_SHIFT, "Speed Boost (Hold)", "Freecam Shortcuts"),
+    endfield::shortcuts::Create("ShortcutHideUI", VK_F7, "Toggle Hide UI", "UI Shortcuts"),
+    endfield::shortcuts::Create("ShortcutFirstPerson", VK_F8, "Toggle First Person", "First Person Shortcuts"),
+    new renodx::utils::settings::Setting{
+        .key = "CameraFreeSpeed",
+        .binding = &endfield::camera::detail::freecam::speed,
+        .default_value = 5.f,
+        .label = "Free Camera Speed",
+        .section = "Camera Controls",
+        .min = .1f,
+        .max = 50.f,
+        .format = "%.1f m/s",
     },
     new renodx::utils::settings::Setting{
         .key = "CameraGameplay",
@@ -1280,12 +1317,16 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
       reshade::register_event<reshade::addon_event::destroy_swapchain>(
           OnDestroySwapchain);
       reshade::register_event<reshade::addon_event::present>(OnPresent);
+      reshade::register_event<reshade::addon_event::reshade_overlay>(endfield::shortcuts::OnFrame);
+      reshade::register_event<reshade::addon_event::reshade_present>(endfield::camera::detail::freecam::OnCursorPresent);
       if (kScreenshotSupport) reshade::register_event<reshade::addon_event::init_command_list>(endfield::screenshots::observer::OnInitCommandList);
       if (kScreenshotSupport) reshade::register_event<reshade::addon_event::init_command_queue>(endfield::screenshots::observer::OnInitQueue);
       if (kScreenshotSupport) reshade::register_event<reshade::addon_event::destroy_device>(endfield::screenshots::observer::OnDestroyDevice);
       break;
     case DLL_PROCESS_DETACH:
       reshade::unregister_event<reshade::addon_event::present>(OnPresent);
+      reshade::unregister_event<reshade::addon_event::reshade_overlay>(endfield::shortcuts::OnFrame);
+      reshade::unregister_event<reshade::addon_event::reshade_present>(endfield::camera::detail::freecam::OnCursorPresent);
       if (kScreenshotSupport) reshade::unregister_event<reshade::addon_event::init_command_list>(endfield::screenshots::observer::OnInitCommandList);
       if (kScreenshotSupport) reshade::unregister_event<reshade::addon_event::init_command_queue>(endfield::screenshots::observer::OnInitQueue);
       if (kScreenshotSupport) reshade::unregister_event<reshade::addon_event::destroy_device>(endfield::screenshots::observer::OnDestroyDevice);

@@ -46,5 +46,6 @@ For human discoverability, `.agents/skills/README.md` summarizes the skills and 
 - Do not introduce named single-use locals that are only passed to the next call or immediately returned; construct the value at the call/return site unless the local is mutated, reused, or materially clarifies the code.
 - For C++ parameters, use pointers for modifiable/out values and `const&` for non-modified inputs that should not be copied; avoid non-const references except established callback/API signatures.
 - Validate changes with the smallest relevant build target or manual verification path.
+- Use Release configuration for addon builds, including development and test candidates, unless the user explicitly requests another configuration.
 
 

@@ -10,6 +10,7 @@ namespace endfield::menu {
 // Keep the registered Setting objects as the sole source of values, callbacks,
 // availability and persistence. Only their presentation is game-specific.
 inline bool DrawSetting(renodx::utils::settings::Setting* setting) {
+  if (setting->key.starts_with("Shortcut")) return shortcuts::Draw(setting);
   using renodx::utils::settings::SettingValueType;
   if (setting->value_type == SettingValueType::CUSTOM) return setting->on_draw();
   if (setting->value_type == SettingValueType::TEXT) {
@@ -104,7 +105,7 @@ inline void Draw(const renodx::utils::settings::Settings& settings) {
                        [](unsigned char a, unsigned char b) { return std::tolower(a) == std::tolower(b); }) != text.end() || search[0] == 0;
   };
   static int page = 0;
-  constexpr const char* pages[] = {"FPS Limiter", "Graphics", "Entities", "Screenshots", "Patches", "System", "Camera", "UI"};
+  constexpr const char* pages[] = {"FPS Limiter", "Graphics", "Entities", "Screenshots", "Patches", "System", "Camera", "UI", "Shortcuts"};
   constexpr const char* descriptions[] = {
       "FPS unlock and limits for gameplay, frame generation and background use.",
       "Rendering resolution, geometry detail and depth of field.",
@@ -113,13 +114,17 @@ inline void Draw(const renodx::utils::settings::Settings& settings) {
       "HDR frame-generation compatibility and uncensor options.",
       "Runtime information and addon credits.",
       "Camera position, rotation, zoom range and body-visible first person.",
-      "Hide game UI, UID, latency bar and ping during gameplay, menus and conversations."};
+      "Hide game UI, UID, latency bar and ping during gameplay, menus and conversations.",
+      "Click a shortcut button to rebind it. Optional Ctrl, Shift and Alt combinations are supported. Shortcuts pause while using the overlay."};
   constexpr struct {
     const char* name;
     int page;
     bool advanced;
   } sections[] = {
       {"Camera Controls", 6, false},
+      {"Freecam Shortcuts", 8, false},
+      {"UI Shortcuts", 8, false},
+      {"First Person Shortcuts", 8, false},
       {"Camera Position", 6, false},
       {"Camera Rotation", 6, false},
       {"First Person", 6, false},

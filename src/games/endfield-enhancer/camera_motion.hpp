@@ -255,6 +255,7 @@ inline void HookedTailTick(void* manager, float dt, MethodInfo* method) {
 }
 
 inline void HookedInputTick(void* manager, float dt, MethodInfo* method) {
+  freecam::Maintain();
   // The next gameplay camera update must read control facing, not last frame's
   // animated render rotation. Do not undo another camera owner's later write.
   RestoreControlView();

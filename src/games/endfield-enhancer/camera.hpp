@@ -166,12 +166,15 @@ inline void Write(void* state, size_t offset, T value) {
 
 #include "./camera_mesh_runtime.hpp"
 #include "./camera_movement.hpp"
+namespace freecam { inline void Maintain(); }
 #include "./camera_motion.hpp"
+#include "./camera_free.hpp"
 
 inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   const Values v = ReadValues();
   void* manager = nullptr;
   void* controller = Context(v, &manager);
+  freecam::Maintain();
   if (!controller) {
     // Retain the incoming view while this interaction is preparing.
     // Switching to any other unsupported camera invalidates it immediately.
@@ -201,6 +204,8 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   const Quat rotation_correction = Read<Quat>(state, 0xb8);
   const bool conversation = object_class(controller) == dialogue::controller_class;
   if (!Finite(position) || !Finite(correction) || !Unit(orientation) || !Unit(rotation_correction)) {
+    freecam::requested.store(false);
+    freecam::Release();
     dialogue::ResetView();
     movement::Update(false, {});
     mesh_runtime::UpdateBinding(false);
@@ -210,6 +215,7 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
     push_state(brain, state, method);
     return;
   }
+  if (freecam::Apply(brain, state, method)) return;
   const bool native_photo_first_person = v.first_person && object_class(controller) == photo_class
       && Read<bool>(controller, native_first_person);
   void* first_person_head = v.first_person && !native_photo_first_person ? Head() : nullptr;
@@ -477,6 +483,10 @@ inline bool Resolve() {
   }
   if (!movement::Resolve(game, value_size, class_from_type)) return false;
   if (!motion::Resolve(unity, cine, icall)) return false;
+  freecam::available.store(freecam::Resolve(game, value_size, class_from_type, return_type, method_flags));
+  Log(reshade::log::level::info, freecam::available.load()
+      ? "Endfield enhancer: free camera input API resolved"
+      : "Endfield enhancer: free camera input API unsupported; free camera disabled");
   if (!mesh_runtime::ResolveCloneAwake(icall)) return false;
   entries[5] = reinterpret_cast<void*>(mesh_runtime::native_awake);
   motion::tail_tick = reinterpret_cast<motion::CameraTick>(entries[3]);
@@ -525,6 +535,11 @@ inline void OnPresent() {
 }
 inline void Shutdown() {
   using namespace detail;
+  freecam::requested.store(false);
+  freecam::StopMouse();
+  if (movement::game_thread.load() == GetCurrentThreadId()) freecam::Release();
+  else if (freecam::active.load())
+    Log(reshade::log::level::warning, "Endfield enhancer: disable free camera before hot-unloading on another thread");
   AcquireSRWLockExclusive(&values_lock);
   values.enabled = false;
   ReleaseSRWLockExclusive(&values_lock);
