@@ -9,8 +9,10 @@ inline int capture_frame = 0;
 inline int capture_started = 0;
 inline std::string message;
 inline Setting* message_owner = nullptr;
-inline constexpr size_t global_shortcut_count = 4;
+inline constexpr size_t global_shortcut_count = 12;
 inline constexpr const char* keys[] = {"ShortcutFreeCamera", "ShortcutHideUI", "ShortcutFirstPerson", "ShortcutFullscreen",
+                                       "ShortcutHideUID", "ShortcutHideLatencyBar", "ShortcutHidePing", "ShortcutHideQuestLog",
+                                       "ShortcutHideMap", "ShortcutHideMapButtons", "ShortcutHideMenuButtons", "ShortcutHideUtilityWheel",
                                        "ShortcutFreeExit", "ShortcutFreeForward", "ShortcutFreeBackward", "ShortcutFreeLeft", "ShortcutFreeRight",
                                        "ShortcutFreeDown", "ShortcutFreeUp", "ShortcutFreeBoost"};
 
@@ -20,7 +22,7 @@ inline Setting* Create(const char* key, float default_key, const char* label, co
 
 inline bool Conflicts(const Setting* setting, const Setting* other, int binding) {
   if (!binding || !other || other == setting || other->value_as_int != binding) return false;
-  if (setting->section == other->section) return true;
+  if (setting->section == other->section) return setting->section != "UI Shortcuts";
 
   return !(setting->section == "Freecam Shortcuts" && setting->key != "ShortcutFreeCamera")
          && !(other->section == "Freecam Shortcuts" && other->key != "ShortcutFreeCamera");
@@ -161,6 +163,7 @@ inline void OnFrame(reshade::api::effect_runtime* runtime) {
     }
   } else if (!capturing && focused && !runtime->is_key_down(VK_LWIN) && !runtime->is_key_down(VK_RWIN)
              && !ImGui::GetIO().WantCaptureKeyboard && !ImGui::GetIO().WantCaptureMouse) {
+    bool settings_changed = false;
     for (size_t i = 0; i < global_shortcut_count; ++i) {
       auto* binding = FindSetting(keys[i]);
       if (!binding || !Matches(runtime, binding->value_as_int, modifiers, true)) continue;
@@ -179,18 +182,21 @@ inline void OnFrame(reshade::api::effect_runtime* runtime) {
       } else if (i == 3) {
         window_enhancements::request_fullscreen_toggle();
       } else {
-        auto* target = FindSetting(i == 1 ? "HideUI" : "CameraFirstPerson");
+        auto* target = FindSetting(i == 2 ? "CameraFirstPerson" : binding->key.substr(sizeof("Shortcut") - 1));
         if (target && (!target->is_enabled || target->is_enabled())) {
           if (i == 2 && target->GetValue() < .5f) {
             camera::detail::freecam::requested.store(false);
             Set(FindSetting("CameraControls"), 1.f);
           }
           Set(target, target->GetValue() >= .5f ? 0.f : 1.f);
-          SaveSettings();
-          SaveGlobalSettings();
+          settings_changed = true;
         }
       }
-      break;
+      if (binding->section != "UI Shortcuts") break;
+    }
+    if (settings_changed) {
+      SaveSettings();
+      SaveGlobalSettings();
     }
   }
   camera::detail::freecam::Controls controls;
