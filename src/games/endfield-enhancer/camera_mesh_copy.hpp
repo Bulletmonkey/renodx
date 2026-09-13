@@ -116,7 +116,12 @@ inline void BuildDetachedMesh() {
         ? endfield::camera::mesh::BuildNeckCaps(decoded,indices,candidate_head,filtered,candidate_neck)
         : std::vector<endfield::camera::mesh::NeckCapTriangle>{};
 
-    if(filtered==indices&&caps.empty())throw std::runtime_error("No head components or neck caps selected");
+    if(filtered==indices&&caps.empty()){
+      // Cache only completed negative classifications, never failed builds.
+      seen.push_back({gc_new(gc_target(candidate_renderer),false),gc_new(gc_target(source_root),false),
+                      gc_new(gc_target(candidate_bones),false),gc_new(gc_target(candidate_model),false)});
+      throw std::runtime_error("No head components or neck caps selected");
+    }
     if(!caps.empty()){
       std::vector<uint32_t> composed;composed.reserve(filtered.size()+caps.size()*3);
       std::array<float,6> mesh_bounds{};get_bounds(gc_target(source_root),mesh_bounds.data());
@@ -253,6 +258,7 @@ inline void BuildDetachedMesh() {
     if(proxy&&!proxy_root)throw std::runtime_error("Cannot retain original shadow mesh");
     if(!PaletteMatches(gc_target(candidate_renderer),candidate_bones))throw std::runtime_error("Bone palette changed before binding");
     bindings.push_back({candidate_renderer,source_root,mesh_root,proxy_root,candidate_model,false,false,candidate_bones});
+    bindings.back().has_visible_triangles=removed<indices.size()/3;
     candidate_bones=0;
     candidate_renderer=candidate_model=source_root=mesh_root=0;
 

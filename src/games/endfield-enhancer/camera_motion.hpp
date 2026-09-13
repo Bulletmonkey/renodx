@@ -247,6 +247,17 @@ inline void HookedTailTick(void* manager, float dt, MethodInfo* method) {
   tail_tick(manager,dt,method);
   void* active_manager = nullptr;
   if (!Context(ReadValues(),&active_manager) || active_manager!=manager) return;
+  // Native late updates can copy the unturned hand/prop pose after the main
+  // camera tick. Refresh attachment poses again beside the final head sample.
+  if (movement::attached && movement::effects::animator_root.Get()) {
+    try {
+      movement::Root animator(movement::effects::animator_root.Get());
+      movement::Root model(movement::Call(movement::component_transform,animator.Get()));
+      movement::effects::Update(animator.Get(),model.Get());
+    } catch (...) {
+      Log(reshade::log::level::info,"Endfield enhancer: late animation attachment refresh rejected");
+    }
+  }
   if (camera_root && captured_frame>=0) {
     Apply(gc_target(camera_root));
     static bool reported = false;

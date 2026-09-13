@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 #include "./runtime_status.hpp"
 #include "./camera_mesh.hpp"
 #include <array>

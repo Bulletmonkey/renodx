@@ -1,14 +1,15 @@
 #pragma once
 
-// Included inside camera::detail. Presentation only: native locomotion, root
-// motion, gameplay rotation and IK remain game-owned. Lateral reversals may
-// interrupt native locomotion turn states; no clips are replaced.
+// Included inside camera::detail. Standing look-limit turns use native facing;
+// moving lateral facing remains a skeleton presentation offset. Native root
+// motion and IK remain game-owned; no clips are replaced.
 namespace movement {
 inline std::atomic<DWORD> game_thread{0};
 inline std::atomic_bool attached{false};
 inline Il2CppMethod started, released, paused, cinematic, get_movement, manual_move;
 inline Il2CppMethod animated_move, block_movement, base_controller, script_controlled;
 inline Il2CppMethod player_controller, raw_move_axis;
+inline Il2CppMethod get_rotator, entity_rotation, set_facing;
 struct MoveAxes { float x, y; };
 inline void* character_controller_class = nullptr;
 inline bool (*assignable)(void*,void*) = nullptr;
@@ -90,9 +91,11 @@ inline bool RestoreSimulationPose() {
     return false;
   }
 }
+#include "./camera_effects.hpp"
 inline bool RestoreVisual() {
   try {
     if (!RestoreSimulationPose()) return false;
+    effects::Restore();
     visual_transform = Root();
     visual_entity = Root();
     attached = false;
@@ -146,8 +149,8 @@ inline void Update(bool active, Vec3 view, float look_limit = 60.f) {
     void* find_args[]{path.Get()};
     Root skeleton(Alive(animator_transform.Get()) ? Call(find_transform, animator_transform.Get(), find_args) : nullptr);
     // The extracted native rigs put bones and all IK targets under this direct
-    // child. Never rotate the Animator/model/gameplay transform: root-motion
-    // velocity and dodge heading must retain the game's original reference.
+    // child. Moving presentation must not directly rotate the model/gameplay
+    // transform: root-motion velocity and dodge heading use that reference.
     if (!Alive(skeleton.Get()) || skeleton.Get() == animator_transform.Get()
         || Call(parent_transform, skeleton.Get()) != animator_transform.Get()) {
       Release();
@@ -160,7 +163,7 @@ inline void Update(bool active, Vec3 view, float look_limit = 60.f) {
       visual_entity = std::move(entity);
       visual_transform = std::move(skeleton);
       written_visual = original_visual;
-      Log(reshade::log::level::info, "Endfield enhancer: native movement with skeleton-only camera facing; no animation or velocity overrides");
+      Log(reshade::log::level::info, "Endfield enhancer: native standing facing with skeleton-only moving offset; no animation or velocity overrides");
     }
     const Quat local = Value<Quat>(local_rotation, visual_transform.Get());
     const Quat world = Value<Quat>(world_rotation, visual_transform.Get());
@@ -221,6 +224,25 @@ inline void Update(bool active, Vec3 view, float look_limit = 60.f) {
       turn_velocity = turn_start_velocity = 0.f;
       locomotion::reversed = false;
       locomotion::blend_target = 0;
+      // Commit standing turns to gameplay facing. Compensating the animated
+      // skeleton alone leaves native props and subsequent animations facing
+      // the old direction, and Release would undo the apparent body turn.
+      // Preserve authored skeleton rotation rather than cancelling it out.
+      if (!RestoreSimulationPose()) { Release(); return; }
+      Root rotator(Call(get_rotator, visual_entity.Get()));
+      const Quat rotation = Value<Quat>(entity_rotation, visual_entity.Get());
+      if (!rotator.Get() || !Unit(rotation)) { Release(); return; }
+      const Vec3 forward = Rotate(rotation, {0, 0, 1});
+      const float delta = std::remainder(held_yaw - std::atan2(forward.x, forward.z) * 57.295779513f, 360.f);
+      if (std::abs(delta) > .01f) {
+        Quat wanted = AxisAngle({0, 1, 0}, delta) * rotation;
+        void* args[]{&wanted};
+        Call(set_facing, rotator.Get(), args);
+      }
+      written_visual = Value<Quat>(local_rotation, visual_transform.Get());
+      attached = true;
+      effects::Restore();
+      return;
     }
     const Vec3 facing = Rotate(world, {0, 0, 1});
     Quat wanted = AxisAngle({0, 1, 0}, std::remainder(held_yaw - std::atan2(facing.x, facing.z) * 57.295779513f, 360.f)) * world;
@@ -228,6 +250,10 @@ inline void Update(bool active, Vec3 view, float look_limit = 60.f) {
     attached = true;
     Call(set_world_rotation, visual_transform.Get(), args);
     written_visual = Value<Quat>(local_rotation, visual_transform.Get());
+    if (effects::animator_root.Get()!=animator.Get()) {
+      effects::Restore();
+      effects::animator_root=Root(animator.Get());
+    }
   } catch (...) {
     Release();
   }
@@ -250,6 +276,14 @@ inline bool Resolve(Il2CppImage game, int32_t (*value_size)(void*, uint32_t*), v
   if (class_from_type(return_type(player_controller)) != class_from_name(game,"Beyond.Gameplay.Core","PlayerController")
       || class_from_type(return_type(raw_move_axis)) != class_from_name(unity,"UnityEngine","Vector2")
       || value_size(class_from_type(return_type(raw_move_axis)),&axes_alignment) != sizeof(MoveAxes)) return false;
+  get_rotator = FindMethod(game, "Beyond.Gameplay.Core", "Entity", "get_rotateCom", 0);
+  entity_rotation = FindMethod(game, "Beyond.Gameplay.Core", "Entity", "get_rotation", 0);
+  set_facing = FindMethod(game, "Beyond.Gameplay.Core", "RotatorComponent", "SetRotation", 1);
+  if (!get_rotator || !entity_rotation || !set_facing
+      || class_from_type(return_type(get_rotator)) != class_from_name(game, "Beyond.Gameplay.Core", "RotatorComponent")
+      || class_from_type(return_type(entity_rotation)) != class_from_name(unity, "UnityEngine", "Quaternion")
+      || class_from_type(parameter(set_facing, 0)) != class_from_name(unity, "UnityEngine", "Quaternion")
+      || class_from_type(return_type(set_facing)) != class_from_name(FindImage("mscorlib.dll"), "System", "Void")) return false;
   started = FindMethod(game, "Beyond.Gameplay.Core", "Entity", "get_markStarted", 0);
   released = FindMethod(game, "Beyond.Gameplay.Core", "Entity", "get_markReleased", 0);
   paused = FindMethod(game, "Beyond.Gameplay.Core", "Entity", "get_isPaused", 0);
@@ -283,7 +317,10 @@ inline bool Resolve(Il2CppImage game, int32_t (*value_size)(void*, uint32_t*), v
                      object_alive, local_rotation, world_rotation, set_local_rotation, set_world_rotation})
     if (!entry) return false;
   uint32_t alignment = 0;
-  return value_size(class_from_type(return_type(local_rotation)), &alignment) == sizeof(Quat)
+  return value_size(class_from_type(return_type(entity_rotation)), &alignment) == sizeof(Quat)
+         && value_size(class_from_type(parameter(set_facing, 0)), &alignment) == sizeof(Quat)
+         && effects::Resolve(game,unity)
+         && value_size(class_from_type(return_type(local_rotation)), &alignment) == sizeof(Quat)
          && value_size(class_from_type(return_type(world_rotation)), &alignment) == sizeof(Quat)
          && value_size(class_from_type(parameter(set_local_rotation, 0)), &alignment) == sizeof(Quat)
          && value_size(class_from_type(parameter(set_world_rotation, 0)), &alignment) == sizeof(Quat)

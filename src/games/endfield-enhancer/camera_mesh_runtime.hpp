@@ -6,9 +6,7 @@ inline bool started=false,reset_failed=false,fill_holes=false;
 inline ULONGLONG last_scan=0, settling_until=0;
 inline uint32_t session_model=0;
 struct Candidate { uint32_t mesh=0,renderer=0,model=0,bones=0; std::string name;bool dedicated_head=false,body_skin=false;std::vector<uint8_t> head; endfield::camera::mesh::NeckFrame neck; };
-struct Seen { uint32_t renderer=0,mesh=0,bones=0,model=0; };
 inline std::vector<uint32_t> recent_models;
-inline std::vector<Seen> seen;
 inline std::vector<Candidate> candidates;
 inline std::unordered_map<std::string,std::vector<uint8_t>> captures;
 inline uint32_t candidate_source=0;
@@ -39,6 +37,7 @@ inline Il2CppMethod dispose=nullptr;
 inline bool ResetTarget(bool keep_prepared=false) {
   try{
     for(auto& b:bindings)RestoreBinding(&b);
+    for(auto& item:seen)UpdateSkinningPolicy(item.renderer,false,&item.owns_offscreen_update);
     auto destroy=resolve?reinterpret_cast<void(*)(void*,float)>(resolve("UnityEngine.Object::Destroy")):nullptr;
     if(!keep_prepared)for(auto& b:bindings){
       if(destroy&&NativeAlive(b.filtered))destroy(gc_target(b.filtered),0.f);
@@ -147,6 +146,7 @@ inline void Start(bool requested_fill) {
   }
   for(auto it=seen.begin();it!=seen.end();){
     if(retained(it->model)&&NativeAlive(it->renderer)&&NativeAlive(it->mesh)){++it;continue;}
+    UpdateSkinningPolicy(it->renderer,false,&it->owns_offscreen_update);
     for(auto root:{it->renderer,it->mesh,it->bones,it->model})if(root)gc_free(root);
     it=seen.erase(it);
   }
@@ -357,7 +357,7 @@ inline void Start(bool requested_fill) {
 
     }
     if(pending.size()-queued_before==required_buffers){
-      seen.push_back({gc_new(renderer,false),gc_new(gc_target(mesh_root),false),gc_new(gc_target(selected.bones),false),gc_new(gc_target(model_root),false)});
+      // A queued capture is not success; failures must remain eligible for retry.
       candidates.push_back(std::move(selected));
     }else{
       while(pending.size()>queued_before){const auto item=pending.back();pending.pop_back();Invoke(dispose,gc_target(item.buffer));gc_free(item.buffer);gc_free(item.mesh);}
