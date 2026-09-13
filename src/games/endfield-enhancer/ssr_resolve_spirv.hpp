@@ -9,13 +9,6 @@
 
 namespace endfield::ssr_resolve {
 
-// Patch the original module instead of reconstructing its shader ABI or math.
-// Vanilla: color_uv = hit_uv + (pixel % 2) / output_size.
-// Full-resolution hit UVs already identify each output pixel; their offset is 0.
-// Keep the original offset when the input is half resolution (including a
-// native-hook failure). No roughness, confidence, or color math is changed.
-// Only the instruction vocabulary used below is interpreted. Template IDs are
-// symbolic: neither compiler-assigned IDs, module size nor CRC are a contract.
 struct SpirvPatch {
   std::vector<uint32_t> words;
   std::array<uint32_t, 300> ids{};
@@ -36,26 +29,53 @@ struct SpirvPatch {
 
   static uint32_t IdMask(uint32_t opcode) {
     switch (opcode) {
-      case 11: case 20: case 21: case 22: case 71: case 72: case 247: case 248: return 0x2;
-      case 23: case 25: return 0x6;
-      case 32: return 0xA;
-      case 43: case 46: case 59: return 0x6;
-      case 44: return 0xFFFFFFFEu;
-      case 12: return 0xFFFFFFEEu; // ExtInst's instruction number is literal.
-      case 61: case 104: case 112: case 155: return 0xE;
-      case 79: return 0x1E; // Shuffle components are literals.
-      case 81: return 0xE;  // Extract component is literal.
-      case 88: return 0x5E; // Explicit sample: Lod mask is literal.
-      case 99: return 0xE;  // ImageWrite's optional image operands are literal here.
-      case 65: case 80: case 86: case 103: case 129: case 130: case 131: case 132:
-      case 133: case 134: case 137: case 167: case 169: case 170:
-      case 174: case 180: case 184: case 190: case 250: return 0xFFFFFFFEu;
-      default: return 0;
+      case 11:
+      case 20:
+      case 21:
+      case 22:
+      case 71:
+      case 72:
+      case 247:
+      case 248: return 0x2;
+      case 23:
+      case 25:  return 0x6;
+      case 32:  return 0xA;
+      case 43:
+      case 46:
+      case 59:  return 0x6;
+      case 44:  return 0xFFFFFFFEu;
+      case 12:  return 0xFFFFFFEEu;
+      case 61:
+      case 104:
+      case 112:
+      case 155: return 0xE;
+      case 79:  return 0x1E;
+      case 81:  return 0xE;
+      case 88:  return 0x5E;
+      case 99:  return 0xE;
+      case 65:
+      case 80:
+      case 86:
+      case 103:
+      case 129:
+      case 130:
+      case 131:
+      case 132:
+      case 133:
+      case 134:
+      case 137:
+      case 167:
+      case 169:
+      case 170:
+      case 174:
+      case 180:
+      case 184:
+      case 190:
+      case 250: return 0xFFFFFFFEu;
+      default:  return 0;
     }
   }
 
-  // Require a unique matching data-flow fragment. Changes elsewhere in the
-  // module are irrelevant; missing or ambiguous fragments are not patched.
   bool Match(std::initializer_list<uint32_t> pattern) {
     if (!valid) return false;
     unsigned matches = 0;
@@ -71,16 +91,28 @@ struct SpirvPatch {
         const auto mask = IdMask(expected[0] & 0xFFFF);
         for (uint32_t j = 1; j < count; ++j) {
           if ((mask >> j) & 1u) {
-            if (expected[j] >= candidate.size() || words[at + j] == 0 || words[at + j] >= words[3]) { match = false; break; }
+            if (expected[j] >= candidate.size() || words[at + j] == 0 || words[at + j] >= words[3]) {
+              match = false;
+              break;
+            }
             auto& id = candidate[expected[j]];
-            if (id && id != words[at + j]) { match = false; break; }
+            if (id && id != words[at + j]) {
+              match = false;
+              break;
+            }
             id = words[at + j];
-          } else if (expected[j] != words[at + j]) { match = false; break; }
+          } else if (expected[j] != words[at + j]) {
+            match = false;
+            break;
+          }
         }
         p += count;
         at += count;
       }
-      if (match && p == pattern.size()) { found = candidate; ++matches; }
+      if (match && p == pattern.size()) {
+        found = candidate;
+        ++matches;
+      }
     }
     if (matches != 1) return false;
     ids = found;
@@ -103,7 +135,8 @@ struct SpirvPatch {
   }
 
   void Allocate(uint32_t first, uint32_t end) {
-    for (auto id = first; id < end; ++id) if (!ids[id]) ids[id] = words[3]++;
+    for (auto id = first; id < end; ++id)
+      if (!ids[id]) ids[id] = words[3]++;
   }
 
   void Append(std::vector<uint32_t>* output, std::initializer_list<uint32_t> instructions) const {
@@ -111,15 +144,20 @@ struct SpirvPatch {
       const auto* instruction = instructions.begin() + i;
       const auto count = instruction[0] >> 16;
       const auto mask = IdMask(instruction[0] & 0xFFFF);
-      // SPIR-V forbids duplicate scalar/vector type declarations. Reuse any
-      // type that the original module already has (e.g. another bool2 use).
+
       bool existing_type = false;
       if ((instruction[0] & 0xFFFF) == 20 || (instruction[0] & 0xFFFF) == 23) {
         for (size_t j = 5; j < words.size(); j += words[j] >> 16) {
-          if (words[j] == instruction[0] && words[j + 1] == ids[instruction[1]]) { existing_type = true; break; }
+          if (words[j] == instruction[0] && words[j + 1] == ids[instruction[1]]) {
+            existing_type = true;
+            break;
+          }
         }
       }
-      if (existing_type) { i += count; continue; }
+      if (existing_type) {
+        i += count;
+        continue;
+      }
       output->push_back(instruction[0]);
       for (uint32_t j = 1; j < count; ++j) output->push_back((mask >> j) & 1u ? ids[instruction[j]] : instruction[j]);
       i += count;
@@ -129,14 +167,13 @@ struct SpirvPatch {
 
 inline std::vector<uint32_t> PatchFullResolutionResolve(std::span<const uint8_t> original) {
   SpirvPatch patch(original);
-  if (!patch.Match({
-          0x0007004F, 26, 60, 59, 59, 0, 1,
-          0x00050086, 31, 61, 49, 32,
-          0x00050084, 31, 62, 61, 32,
-          0x00050082, 31, 63, 49, 62,
-          0x00040070, 26, 64, 63,
-          0x00050085, 26, 65, 64, 54,
-          0x00050081, 26, 66, 60, 65})
+  if (!patch.Match({0x0007004F, 26, 60, 59, 59, 0, 1,
+                    0x00050086, 31, 61, 49, 32,
+                    0x00050084, 31, 62, 61, 32,
+                    0x00050082, 31, 63, 49, 62,
+                    0x00040070, 26, 64, 63,
+                    0x00050085, 26, 65, 64, 54,
+                    0x00050081, 26, 66, 60, 65})
       || !patch.Match({0x00070058, 28, 59, 58, 55, 2, 21})
       || !patch.Match({0x00050056, 14, 58, 56, 57})
       || !patch.Match({0x0004003D, 9, 56, 11})
@@ -158,31 +195,27 @@ inline std::vector<uint32_t> PatchFullResolutionResolve(std::span<const uint8_t>
   const auto& words = patch.words;
 
   std::vector<uint32_t> patched(words.begin(), words.begin() + 5);
-  patched.insert(patched.end(), {0x00020011, 50});  // OpCapability ImageQuery.
+  patched.insert(patched.end(), {0x00020011, 50});
   bool replaced = false;
   bool declarations = false;
   for (size_t i = 5; i < words.size();) {
     const uint32_t count = words[i] >> 16;
     if (count == 0 || i + count > words.size()) return {};
-    if ((words[i] & 0xFFFF) == 54 && !declarations) {  // Before the first OpFunction.
+    if ((words[i] & 0xFFFF) == 54 && !declarations) {
       declarations = true;
-      patch.Append(&patched, {
-          0x00020014, 81,              // OpTypeBool
-          0x00040017, 82, 81, 2,       // OpTypeVector bool2
-          0x0003002E, 26, 83});        // OpConstantNull float2
+      patch.Append(&patched, {0x00020014, 81,
+                              0x00040017, 82, 81, 2,
+                              0x0003002E, 26, 83});
     }
     if (words[i] == 0x00050081 && words[i + 2] == patch.ids[66]) {
-      // IDs 56 = sampled hit-UV image, 13 = output image variable,
-      // 30 = integer LOD 0, 31 = uint2, 65 = original parity offset.
-      patch.Append(&patched, {
-          0x00050067, 31, 84, 56, 30,  // OpImageQuerySizeLod hit_uv, 0
-          0x0004003D, 12, 85, 13,      // OpLoad output image
-          0x00040068, 31, 86, 85,      // OpImageQuerySize output
-          0x000500AA, 82, 87, 84, 86,  // OpIEqual extents
-          0x0004009B, 81, 88, 87,      // OpAll (both dimensions equal)
-          0x00050050, 82, 90, 88, 88,  // OpCompositeConstruct bool2 (SPIR-V 1.3)
-          0x000600A9, 26, 89, 90, 83, 65,  // OpSelect zero / vanilla offset
-          0x00050081, 26, 66, 60, 89});    // Original OpFAdd, corrected offset
+      patch.Append(&patched, {0x00050067, 31, 84, 56, 30,
+                              0x0004003D, 12, 85, 13,
+                              0x00040068, 31, 86, 85,
+                              0x000500AA, 82, 87, 84, 86,
+                              0x0004009B, 81, 88, 87,
+                              0x00050050, 82, 90, 88, 88,
+                              0x000600A9, 26, 89, 90, 83, 65,
+                              0x00050081, 26, 66, 60, 89});
       replaced = true;
     } else {
       patched.insert(patched.end(), words.begin() + i, words.begin() + i + count);
@@ -192,23 +225,18 @@ inline std::vector<uint32_t> PatchFullResolutionResolve(std::span<const uint8_t>
   return replaced ? patched : std::vector<uint32_t>{};
 }
 
-// Paired Improved SSR override. Identical to the tested C465A053 candidate:
-// Full/M=6 only, remove up to 1/3 mip of excess physical filtering. Preserve
-// low mips and taper at the cap, where the original metadata lost information.
-// Requires the base addon's Improved SSR ON (its metadata remap is upstream).
 inline std::vector<uint32_t> PatchImprovedBlur(std::span<const uint8_t> original) {
   SpirvPatch patch(original);
-  if (!patch.Match({
-          0x00070058, 37, 103, 102, 87, 2, 25,
-          0x00050051, 23, 104, 103, 1,
-          0x00060041, 69, 105, 11, 44, 41,
-          0x0004003D, 23, 106, 105,
-          0x00050085, 23, 107, 104, 106,
-          0x000500B8, 70, 108, 107, 32})
+  if (!patch.Match({0x00070058, 37, 103, 102, 87, 2, 25,
+                    0x00050051, 23, 104, 103, 1,
+                    0x00060041, 69, 105, 11, 44, 41,
+                    0x0004003D, 23, 106, 105,
+                    0x00050085, 23, 107, 104, 106,
+                    0x000500B8, 70, 108, 107, 32})
       || !patch.Match({0x00050041, 68, 84, 11, 40,
-                      0x0004003D, 37, 85, 84,
-                      0x0007004F, 31, 86, 85, 85, 2, 3,
-                      0x00050085, 31, 87, 83, 86})
+                       0x0004003D, 37, 85, 84,
+                       0x0007004F, 31, 86, 85, 85, 2, 3,
+                       0x00050085, 31, 87, 83, 86})
       || !patch.Resource(5, 1, 0) || !patch.Resource(11, 1, 1)
       || !patch.Match({0x0004003B, 64, 5, 2})
       || !patch.Match({0x00040020, 64, 2, 4})
@@ -234,29 +262,27 @@ inline std::vector<uint32_t> PatchImprovedBlur(std::span<const uint8_t> original
     if (count == 0 || i + count > words.size()) return {};
     if ((words[i] & 0xFFFF) == 54 && !declarations) {
       declarations = true;
-      patch.Append(&patched, {
-          0x00040017, 246, 70, 2,
-          0x0004002B, 23, 247, 0x40C00000,  // 6
-          0x0004002B, 23, 248, 0x3EAAAAAB}); // 1/3
+      patch.Append(&patched, {0x00040017, 246, 70, 2,
+                              0x0004002B, 23, 247, 0x40C00000,
+                              0x0004002B, 23, 248, 0x3EAAAAAB});
     }
     if (words[i] == 0x00050085 && words[i + 2] == patch.ids[107]) {
-      patch.Append(&patched, {
-          0x00050085, 23, 249, 104, 106,
-          0x00050041, 68, 250, 5, 40,
-          0x0004003D, 37, 251, 250,
-          0x0007004F, 31, 252, 251, 251, 0, 1,
-          0x0007004F, 31, 253, 85, 85, 0, 1,
-          0x000500B4, 246, 254, 252, 253,
-          0x0004009B, 70, 255, 254,
-          0x000500B4, 70, 256, 106, 247,
-          0x000500A7, 70, 257, 255, 256,
-          0x00050083, 23, 258, 106, 249,
-          0x0007000C, 23, 259, 1, 80, 258, 25,
-          0x0007000C, 23, 260, 1, 79, 248, 259,
-          0x00050083, 23, 261, 249, 260,
-          0x0007000C, 23, 262, 1, 80, 24, 261,
-          0x0007000C, 23, 263, 1, 79, 249, 262,
-          0x000600A9, 23, 107, 257, 263, 249});
+      patch.Append(&patched, {0x00050085, 23, 249, 104, 106,
+                              0x00050041, 68, 250, 5, 40,
+                              0x0004003D, 37, 251, 250,
+                              0x0007004F, 31, 252, 251, 251, 0, 1,
+                              0x0007004F, 31, 253, 85, 85, 0, 1,
+                              0x000500B4, 246, 254, 252, 253,
+                              0x0004009B, 70, 255, 254,
+                              0x000500B4, 70, 256, 106, 247,
+                              0x000500A7, 70, 257, 255, 256,
+                              0x00050083, 23, 258, 106, 249,
+                              0x0007000C, 23, 259, 1, 80, 258, 25,
+                              0x0007000C, 23, 260, 1, 79, 248, 259,
+                              0x00050083, 23, 261, 249, 260,
+                              0x0007000C, 23, 262, 1, 80, 24, 261,
+                              0x0007000C, 23, 263, 1, 79, 249, 262,
+                              0x000600A9, 23, 107, 257, 263, 249});
       ++replaced;
     } else {
       patched.insert(patched.end(), words.begin() + i, words.begin() + i + count);
@@ -266,26 +292,23 @@ inline std::vector<uint32_t> PatchImprovedBlur(std::span<const uint8_t> original
   return replaced == 1 ? patched : std::vector<uint32_t>{};
 }
 
-// Match the Improved SSR branch and its mip inputs, retaining the loaded
-// addon's injection ABI. Unrelated fields/debug names/compiler IDs may differ.
 inline std::vector<uint32_t> PatchImprovedBlend(std::span<const uint8_t> original) {
   SpirvPatch patch(original);
-  if (!patch.Match({
-          0x00050085, 28, 113, 112, 109,
-          0x00060041, 55, 114, 9, 36, 54,
-          0x0004003D, 28, 115, 114,
-          0x000500BE, 56, 116, 115, 38,
-          0x000300F7, 117, 0,
-          0x000400FA, 116, 118, 119,
-          0x000200F8, 118,
-          0x000500B8, 56, 120, 113, 57})
+  if (!patch.Match({0x00050085, 28, 113, 112, 109,
+                    0x00060041, 55, 114, 9, 36, 54,
+                    0x0004003D, 28, 115, 114,
+                    0x000500BE, 56, 116, 115, 38,
+                    0x000300F7, 117, 0,
+                    0x000400FA, 116, 118, 119,
+                    0x000200F8, 118,
+                    0x000500B8, 56, 120, 113, 57})
       || !patch.Match({0x0006000C, 28, 124, 1, 8, 113,
-                      0x00050083, 28, 125, 113, 124})
+                       0x00050083, 28, 125, 113, 124})
       || !patch.Match({0x0004003D, 43, 106, 6,
-                      0x0004003D, 45, 107, 7,
-                      0x00050056, 47, 108, 106, 107,
-                      0x00070058, 29, 16, 108, 105, 2, 48,
-                      0x00050051, 28, 109, 16, 1})
+                       0x0004003D, 45, 107, 7,
+                       0x00050056, 47, 108, 106, 107,
+                       0x00070058, 29, 16, 108, 105, 2, 48,
+                       0x00050051, 28, 109, 16, 1})
       || !patch.Match({0x00050051, 28, 112, 111, 1})
       || !patch.Resource(6, 0, 1) || !patch.Resource(11, 0, 0)
       || !patch.Match({0x0004003D, 60, 161, 11})
@@ -305,7 +328,7 @@ inline std::vector<uint32_t> PatchImprovedBlend(std::span<const uint8_t> origina
   patch.Allocate(166, 179);
   const auto& words = patch.words;
   std::vector<uint32_t> patched(words.begin(), words.begin() + 5);
-  patched.insert(patched.end(), {0x00020011, 50}); // ImageQuery
+  patched.insert(patched.end(), {0x00020011, 50});
   unsigned replaced = 0;
   bool declarations = false;
   for (size_t i = 5; i < words.size();) {
@@ -313,25 +336,23 @@ inline std::vector<uint32_t> PatchImprovedBlend(std::span<const uint8_t> origina
     if (count == 0 || i + count > words.size()) return {};
     if ((words[i] & 0xFFFF) == 54 && !declarations) {
       declarations = true;
-      patch.Append(&patched, {
-          0x00040017, 166, 56, 2,
-          0x0004002B, 28, 167, 0x40C00000,
-          0x0004002B, 28, 168, 0x3FAAAAAB}); // 4/3
+      patch.Append(&patched, {0x00040017, 166, 56, 2,
+                              0x0004002B, 28, 167, 0x40C00000,
+                              0x0004002B, 28, 168, 0x3FAAAAAB});
     }
     const auto start = patched.size();
     patched.insert(patched.end(), words.begin() + i, words.begin() + i + count);
     if (words[i] == 0x000200F8 && words[i + 1] == patch.ids[118]) {
-      patch.Append(&patched, {
-          0x00050067, 33, 169, 106, 36,  // metadata extent
-          0x0004003D, 60, 170, 11,
-          0x00040068, 33, 171, 170,      // output extent
-          0x000500AA, 166, 172, 169, 171,
-          0x0004009B, 56, 173, 172,
-          0x000500B4, 56, 174, 112, 167,
-          0x000500A7, 56, 175, 173, 174,
-          0x00050083, 28, 176, 113, 168,
-          0x0007000C, 28, 177, 1, 40, 176, 48, // FMax(m - 4/3, 0)
-          0x000600A9, 28, 178, 175, 177, 113});
+      patch.Append(&patched, {0x00050067, 33, 169, 106, 36,
+                              0x0004003D, 60, 170, 11,
+                              0x00040068, 33, 171, 170,
+                              0x000500AA, 166, 172, 169, 171,
+                              0x0004009B, 56, 173, 172,
+                              0x000500B4, 56, 174, 112, 167,
+                              0x000500A7, 56, 175, 173, 174,
+                              0x00050083, 28, 176, 113, 168,
+                              0x0007000C, 28, 177, 1, 40, 176, 48,
+                              0x000600A9, 28, 178, 175, 177, 113});
       ++replaced;
     } else if ((words[i] == 0x000500B8 && words[i + 2] == patch.ids[120])
                || (words[i] == 0x00050083 && words[i + 2] == patch.ids[125])) {
@@ -346,4 +367,4 @@ inline std::vector<uint32_t> PatchImprovedBlend(std::span<const uint8_t> origina
   return replaced == 4 ? patched : std::vector<uint32_t>{};
 }
 
-}  // namespace endfield::ssr_resolve
+}

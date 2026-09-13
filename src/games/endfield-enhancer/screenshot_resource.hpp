@@ -25,14 +25,14 @@ inline void Arm(uint32_t width) {
 inline bool Matches(const api::resource_desc& desc, const api::resource_desc& backbuffer,
                     uint32_t width) {
   return width != 0 && desc.type == api::resource_type::texture_2d
-      && backbuffer.type == api::resource_type::texture_2d
-      && desc.texture.format == api::format::r11g11b10_float
-      && desc.texture.width == width && desc.texture.width == backbuffer.texture.width
-      && desc.texture.height == backbuffer.texture.height
-      && desc.texture.levels == 1 && desc.texture.depth_or_layers == 1 && desc.texture.samples == 1
-      && (desc.usage & api::resource_usage::render_target) != 0
-      && (desc.usage & api::resource_usage::shader_resource) != 0
-      && (desc.usage & api::resource_usage::unordered_access) == 0;
+         && backbuffer.type == api::resource_type::texture_2d
+         && desc.texture.format == api::format::r11g11b10_float
+         && desc.texture.width == width && desc.texture.width == backbuffer.texture.width
+         && desc.texture.height == backbuffer.texture.height
+         && desc.texture.levels == 1 && desc.texture.depth_or_layers == 1 && desc.texture.samples == 1
+         && (desc.usage & api::resource_usage::render_target) != 0
+         && (desc.usage & api::resource_usage::shader_resource) != 0
+         && (desc.usage & api::resource_usage::unordered_access) == 0;
 }
 
 inline bool OnCreate(api::device* device, api::resource_desc& desc,
@@ -42,13 +42,12 @@ inline bool OnCreate(api::device* device, api::resource_desc& desc,
   if (!until || GetTickCount64() > until || initial_data || device->get_api() != api::device_api::vulkan) return false;
   if (!Matches(desc, renodx::utils::swapchain::GetBackBufferDesc(device), capture_width.load(std::memory_order_relaxed))
       || !device->check_format_support(api::format::r16g16b16a16_float, desc.usage)) return false;
-  // The RGBA target must retain packed RGB's implicit opaque alpha. Do not
-  // change its format until that copy pipeline has successfully been created.
+
   if (!can_upgrade || !can_upgrade(device)) {
-    deadline.compare_exchange_strong(until,0,std::memory_order_acq_rel);
+    deadline.compare_exchange_strong(until, 0, std::memory_order_acq_rel);
     return false;
   }
-  // Consume the native photo allocation ticket once, never match ordinary frames.
+
   if (!deadline.compare_exchange_strong(until, 0, std::memory_order_acq_rel)) return false;
   pending = desc;
   desc.texture.format = api::format::r16g16b16a16_float;
@@ -57,7 +56,7 @@ inline bool OnCreate(api::device* device, api::resource_desc& desc,
 
 inline void OnInit(renodx::utils::resource::ResourceInfo* info) {
   if (!pending) return;
-  // The same create/init TLS convention is used by resource_upgrade.hpp.
+
   if (info->desc.type == api::resource_type::texture_2d
       && info->desc.texture.format == api::format::r16g16b16a16_float
       && info->desc.texture.width == pending->texture.width
@@ -66,7 +65,7 @@ inline void OnInit(renodx::utils::resource::ResourceInfo* info) {
     info->upgrade_target = &target;
     info->fallback_desc = *pending;
     info->extra_vram = renodx::utils::resource::ComputeTextureSize(info->desc)
-                    - renodx::utils::resource::ComputeTextureSize(*pending);
+                       - renodx::utils::resource::ComputeTextureSize(*pending);
   }
   pending.reset();
 }
@@ -80,8 +79,8 @@ inline bool OnCreateView(api::device* device, api::resource resource,
   bool photo = false;
   renodx::utils::resource::GetResourceInfo(resource, [&](const auto& info) {
     photo = !info.destroyed && info.device == device && info.upgraded
-        && info.upgrade_target == &target
-        && info.desc.texture.format == api::format::r16g16b16a16_float;
+            && info.upgrade_target == &target
+            && info.desc.texture.format == api::format::r16g16b16a16_float;
   });
   if (!photo) return false;
   desc.format = api::format::r16g16b16a16_float;
@@ -90,8 +89,6 @@ inline bool OnCreateView(api::device* device, api::resource resource,
 
 inline void Use(DWORD reason) {
   if (reason == DLL_PROCESS_ATTACH) {
-    // Observe resource lifetime, but do not take ownership of the shared
-    // upgrade module's game-wide view and copy interception for one photo.
     renodx::utils::resource::Use(reason);
     renodx::utils::resource::RegisterOnInitResourceInfoCallback(OnInit);
     reshade::register_event<reshade::addon_event::create_resource>(OnCreate);

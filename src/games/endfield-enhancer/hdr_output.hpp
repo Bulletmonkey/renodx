@@ -35,12 +35,11 @@ struct OutputState {
   bool copy_only = false;
   bool want_copy_only = false;
   bool compatibility_mode = false;
-  // Only physical buffers receiving the private working-HDR clone are listed.
+
   std::unordered_map<uint64_t, uint64_t> working_copies;
-  // Inactive variants only; the active pipeline remains owned by the proxy.
+
   std::vector<CachedPhysicalPipeline> physical_pipelines;
-  // Changing the shader must invalidate the cached pipeline, but never destroy
-  // a pipeline still referenced by submitted command buffers.
+
   std::vector<reshade::api::pipeline> retired_pipelines;
 };
 
@@ -56,14 +55,11 @@ struct ImageState {
   bool failed = false;
   bool drawn = false;
   const char* preparation_failure = nullptr;
-  uint32_t last_shader = 0u;
-  uint64_t acquisition = 0u;
   std::array<float, 8> parameters = {};
   renodx::utils::render::RenderPass pass;
 };
 
 struct SwapchainState {
-  VkDevice device = VK_NULL_HANDLE;
   uint32_t width = 0;
   uint32_t height = 0;
   std::vector<uint64_t> images;
@@ -92,7 +88,6 @@ inline std::unordered_map<reshade::api::device*, OutputState> outputs;
 inline std::unordered_map<uint64_t, CommandState> commands;
 inline std::unordered_map<uint64_t, GraphicsPipeline> graphics;
 inline thread_local bool forwarding = false;
-inline std::atomic_bool ready_logged = false;
 inline std::atomic_bool error_logged = false;
 inline std::atomic_bool capture_graphics = false;
 inline bool events_registered = false;
@@ -106,8 +101,8 @@ inline PFN_vkCmdPipelineBarrier2 pipeline_barrier2 = nullptr;
 inline PFN_vkCmdBindDescriptorSets bind_descriptor_sets = nullptr;
 
 inline void VKAPI_CALL HookBindDescriptorSets(VkCommandBuffer command, VkPipelineBindPoint point,
-    VkPipelineLayout layout, uint32_t first, uint32_t count, const VkDescriptorSet* sets,
-    uint32_t offset_count, const uint32_t* offsets) {
+                                              VkPipelineLayout layout, uint32_t first, uint32_t count, const VkDescriptorSet* sets,
+                                              uint32_t offset_count, const uint32_t* offsets) {
   if (capture_graphics.load(std::memory_order_relaxed) && point == VK_PIPELINE_BIND_POINT_GRAPHICS) {
     const std::lock_guard lock(mutex);
     if (const auto found = commands.find(reinterpret_cast<uint64_t>(command)); found != commands.end()) {
@@ -131,22 +126,17 @@ inline renodx::utils::resource::ResourceUpgradeInfo clone_target = {
 
 inline void ReportFailure(const char* reason, const ImageState* image, uint64_t command_buffer = 0u) {
   if (error_logged.exchange(true)) return;
-  // Preserve a useful failure reason without tracing every Vulkan barrier.
+
   std::ostringstream message;
   message << "Endfield HDR: " << reason
           << std::hex << " image=0x" << image->original.handle
           << " command=0x" << command_buffer
-          << " shader=0x" << image->last_shader
           << std::dec << " extent=" << image->width << 'x' << image->height
-          << " acquisition=" << image->acquisition
           << " drawn=" << image->drawn << " encoded=" << image->encoded
           << " preparation=" << (image->preparation_failure == nullptr ? "none" : image->preparation_failure);
   reshade::log::message(reshade::log::level::error, message.str().c_str());
 }
 
-// Select by the application output image, not a list of shaders observed at one
-// resolution. Scaling/compositing variants keep their shaders and viewport;
-// only their attachment format changes while rendering into our FP16 clone.
 inline constexpr auto on_output_draw = []<typename Context>(Context& context)
     -> renodx::utils::command_action::CallbackResult<Context> {
   if (!capture_graphics.load(std::memory_order_relaxed) || context.IsDispatch()) return {};
@@ -156,8 +146,7 @@ inline constexpr auto on_output_draw = []<typename Context>(Context& context)
   const auto target = images.find(command->second.output_image);
   if (target == images.end() || !target->second->active) return {};
   auto* image = target->second.get();
-  // Each addon owns its utility handle even when the backing data is shared.
-  // Never enter the shader maps if registration is unavailable.
+
   if (renodx::utils::shader::shared.data == nullptr) {
     image->failed = true;
     ReportFailure("draw.shader_shared_missing", image, context.cmd_list->get_native());
@@ -169,21 +158,20 @@ inline constexpr auto on_output_draw = []<typename Context>(Context& context)
     const uint32_t pixel_hash = renodx::utils::shader::GetCurrentPixelShaderHash(shader_state);
     const auto& registrations = renodx::utils::command_action::internal::shared.data->registrations;
     const bool has_pixel_callback = pixel_hash != 0u && registrations.contains(pixel_hash);
-    // Command-wide callbacks run before shader-specific injection. Wait for
-    // the last registered graphics stage, so the base cannot overwrite FP16.
+
     if (!context.matched_shader_stage.has_value()) {
       const uint32_t vertex_hash = renodx::utils::shader::GetCurrentVertexShaderHash(shader_state);
       if (has_pixel_callback || (vertex_hash != 0u && registrations.contains(vertex_hash))) return {};
     } else if (context.matched_shader_stage != renodx::utils::shader::PIXEL_INDEX && has_pixel_callback) {
       return {};
     }
-    image->last_shader = pixel_hash;
   }
   const auto found = stage == nullptr ? graphics.end() : graphics.find(stage->pipeline.handle);
   if (found == graphics.end()) {
     image->failed = true;
     ReportFailure(shader_state == nullptr ? "draw.command_shader_state_missing"
-                  : stage == nullptr ? "draw.pixel_stage_missing" : "draw.pipeline_untracked",
+                  : stage == nullptr      ? "draw.pixel_stage_missing"
+                                          : "draw.pipeline_untracked",
                   image, context.cmd_list->get_native());
     return {.bypass = true};
   }
@@ -198,8 +186,7 @@ inline constexpr auto on_output_draw = []<typename Context>(Context& context)
         found_format = true;
       }
     }
-    // Preserve the base addon's replacements and injection ABI. Only the color
-    // attachment format changes; blend, vertex input, depth and shader math do not.
+
     auto layout = pipeline.layout;
     const bool has_details = renodx::utils::shader::GetPipelineShaderDetails(stage->pipeline,
                                                                              [&](const renodx::utils::shader::PipelineShaderDetails& details) {
@@ -218,10 +205,11 @@ inline constexpr auto on_output_draw = []<typename Context>(Context& context)
     renodx::utils::pipeline::DestroyPipelineSubobjects(subobjects, pipeline.count);
     if (!created) {
       image->failed = true;
-      ReportFailure(!found_format ? "draw.render_target_format_missing"
-                    : !has_details ? "draw.pipeline_details_missing"
+      ReportFailure(!found_format                   ? "draw.render_target_format_missing"
+                    : !has_details                  ? "draw.pipeline_details_missing"
                     : pipeline.restore.handle == 0u ? "draw.restore_pipeline_missing"
-                    : "draw.fp16_pipeline_creation_failed", image, context.cmd_list->get_native());
+                                                    : "draw.fp16_pipeline_creation_failed",
+                    image, context.cmd_list->get_native());
       return {.bypass = true};
     }
   }
@@ -280,8 +268,7 @@ inline void SetCloneActive(ImageState* image, bool active) {
 }
 
 inline void SelectPhysicalShader(OutputState* output, uint64_t back_buffer,
-    renodx::utils::draw::SwapchainProxyPass* proxy, std::span<const uint8_t> shader) {
-  // Never erase a live proxy's shader while waiting for the base contract.
+                                 renodx::utils::draw::SwapchainProxyPass* proxy, std::span<const uint8_t> shader) {
   if (shader.empty()) return;
   if (proxy->pixel_shader.data() == shader.data() && proxy->pixel_shader.size() == shader.size()) return;
   if (proxy->pass.pipeline.handle != 0u) {
@@ -301,7 +288,7 @@ inline void SelectPhysicalShader(OutputState* output, uint64_t back_buffer,
 inline void SetPhysicalCopyOnly(reshade::api::device* device, bool copy_only, uint64_t back_buffer = 0u) {
   auto found = outputs.find(device);
   if (found == outputs.end()) return;
-  // Leave the base output intact until its shader and parameters are captured.
+
   if (found->second.parameters == nullptr || found->second.vertex_shader.empty()
       || found->second.pixel_shader.empty()) return;
   auto* data = renodx::utils::data::Get<renodx::mods::swapchain::v2::DeviceData>(device);
@@ -318,8 +305,6 @@ inline void SetPhysicalCopyOnly(reshade::api::device* device, bool copy_only, ui
   output.copy_only = copy_only;
 }
 
-// Use the installed base addon's actual compact output payload and shader.
-// No INI polling, preset guessing, or duplicate game/UI brightness arithmetic.
 inline bool ReadOutputContract(ImageState* image) {
   auto* data = renodx::utils::data::Get<renodx::mods::swapchain::v2::DeviceData>(image->device);
   if (data == nullptr) {
@@ -337,13 +322,10 @@ inline bool ReadOutputContract(ImageState* image) {
       output.pixel_shader = proxy->pixel_shader;
       output.parameters = proxy->shader_injection;
       output.compatibility_mode = proxy->use_compatibility_mode;
-      reshade::log::message(reshade::log::level::info,
-                            "Endfield HDR: base output shader and parameters captured.");
       break;
     }
   }
-  // The first loading-frame present initializes the base proxy. Until then
-  // leave the ordinary base-addon path intact and retry on the next acquire.
+
   if (output.parameters == nullptr) {
     image->preparation_failure = "prepare.base_output_payload_missing";
     return false;
@@ -375,7 +357,7 @@ inline bool PrepareImage(ImageState* image) {
     return false;
   }
   if (!image->device->check_format_support(reshade::api::format::r10g10b10a2_unorm,
-                                         reshade::api::resource_usage::render_target)) {
+                                           reshade::api::resource_usage::render_target)) {
     image->preparation_failure = "prepare.rgb10_render_target_unsupported";
     return false;
   }
@@ -394,15 +376,12 @@ inline bool PrepareImage(ImageState* image) {
   }
 
   auto& pass = image->pass;
-  // API-created private views bypass addon cloning callbacks. They always refer
-  // to the requested image, including the original RGB10 conversion target.
+
   reshade::api::resource_view rtv = {}, srv = {};
   const bool rtv_created = image->device->create_resource_view(image->original,
-                                           reshade::api::resource_usage::render_target,
-                                           reshade::api::resource_view_desc(reshade::api::format::r10g10b10a2_unorm), &rtv);
-  if (!rtv_created || !image->device->create_resource_view(image->clone,
-                                              reshade::api::resource_usage::shader_resource,
-                                              reshade::api::resource_view_desc(reshade::api::format::r16g16b16a16_float), &srv)) {
+                                                               reshade::api::resource_usage::render_target,
+                                                               reshade::api::resource_view_desc(reshade::api::format::r10g10b10a2_unorm), &rtv);
+  if (!rtv_created || !image->device->create_resource_view(image->clone, reshade::api::resource_usage::shader_resource, reshade::api::resource_view_desc(reshade::api::format::r16g16b16a16_float), &srv)) {
     if (rtv.handle != 0u) image->device->destroy_resource_view(rtv);
     if (srv.handle != 0u) image->device->destroy_resource_view(srv);
     image->failed = true;
@@ -426,13 +405,11 @@ inline bool PrepareImage(ImageState* image) {
   pass.render_target_load_op = reshade::api::render_pass_load_op::discard;
   pass.render_target_store_op = reshade::api::render_pass_store_op::store;
   pass.flush_after_render = false;
-  // This is the captured terminal graphics pass. The game records only its
-  // present transition afterward; no new queue submission or command pool.
+
   pass.revert_state_after_render = false;
   pass.push_constants[{.slot = 0u, .space = 0u}] = std::span<const float>(image->parameters);
   HMODULE module = nullptr;
-  // The shared clone target and the base addon's live parameters must outlive
-  // all recorded GPU work. This restart-required path cannot be hot-unloaded.
+
   if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
                           reinterpret_cast<LPCWSTR>(&clone_target), &module)
       || !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
@@ -448,12 +425,13 @@ inline bool Encode(ImageState* image, VkCommandBuffer command_buffer) {
   const auto found = commands.find(reinterpret_cast<uint64_t>(command_buffer));
   if (!image->acquired || !image->drawn || image->encoded || image->failed
       || found == commands.end() || found->second.in_render_pass) {
-    ReportFailure(!image->acquired ? "encode.not_acquired"
-                  : !image->drawn ? "encode.no_output_draw"
-                  : image->encoded ? "encode.already_encoded"
-                  : image->failed ? "encode.image_already_failed"
+    ReportFailure(!image->acquired          ? "encode.not_acquired"
+                  : !image->drawn           ? "encode.no_output_draw"
+                  : image->encoded          ? "encode.already_encoded"
+                  : image->failed           ? "encode.image_already_failed"
                   : found == commands.end() ? "encode.command_untracked"
-                  : "encode.render_pass_still_open", image, reinterpret_cast<uint64_t>(command_buffer));
+                                            : "encode.render_pass_still_open",
+                  image, reinterpret_cast<uint64_t>(command_buffer));
     return false;
   }
   auto* cmd = found->second.command_list;
@@ -475,17 +453,13 @@ inline bool Encode(ImageState* image, VkCommandBuffer command_buffer) {
     ReportFailure("encode.native_graphics_bindings_incomplete", image, reinterpret_cast<uint64_t>(command_buffer));
     return false;
   }
-  // Vulkan has no standalone RTV binding outside a render pass. Restore the
-  // pipeline/descriptor/dynamic state, not stale attachments from the ended UI
-  // pass. Push constants are consumed only by this terminal output draw.
+
   previous_state.render_targets.clear();
   previous_state.depth_stencil = {};
-  // Generic replay drops Vk dynamic offsets. Restore graphics sets natively;
-  // the graphics-only RenderPass does not disturb compute descriptor bindings.
+
   previous_state.graphics_descriptor_tables.clear();
   previous_state.compute_descriptor_tables.clear();
-  // Both original and working images are still COLOR_ATTACHMENT_OPTIMAL.
-  // Restore the working layout for the mirrored application barrier below.
+
   cmd->barrier(image->clone, reshade::api::resource_usage::render_target,
                reshade::api::resource_usage::shader_resource_pixel);
   const bool rendered = image->pass.Render(cmd);
@@ -499,14 +473,10 @@ inline bool Encode(ImageState* image, VkCommandBuffer command_buffer) {
   }
   image->encoded = true;
   outputs[image->device].want_copy_only = true;
-  if (!ready_logged.exchange(true)) {
-    reshade::log::message(reshade::log::level::info,
-                          "Endfield HDR: FP16 scene and UI encoded to HDR10 before Streamline; presentation routing enabled.");
-  }
   return true;
 }
 
-inline void TrackSwapchain(VkDevice device, VkSwapchainKHR swapchain,
+inline void TrackSwapchain(VkSwapchainKHR swapchain,
                            const VkSwapchainCreateInfoKHR& desc) {
   if (desc.imageArrayLayers != 1u || desc.imageSharingMode != VK_SHARING_MODE_EXCLUSIVE) {
     reshade::log::message(reshade::log::level::warning,
@@ -515,10 +485,9 @@ inline void TrackSwapchain(VkDevice device, VkSwapchainKHR swapchain,
   }
   const std::lock_guard lock(mutex);
   swapchains[reinterpret_cast<uint64_t>(swapchain)] = {
-      device, desc.imageExtent.width, desc.imageExtent.height, {}};
+      desc.imageExtent.width, desc.imageExtent.height, {}};
 }
 
-// Install the output hooks in the same transaction as the HDR10 create/options hooks.
 inline VkResult VKAPI_CALL HookGetImages(VkDevice device, VkSwapchainKHR swapchain,
                                          uint32_t* count, VkImage* result_images) {
   const VkResult result = get_images(device, swapchain, count, result_images);
@@ -563,7 +532,6 @@ inline VkResult VKAPI_CALL HookAcquire(VkDevice device, VkSwapchainKHR swapchain
   const auto found = images.find(chain->second.images[*index]);
   if (found == images.end()) return result;
   auto* image = found->second.get();
-  ++image->acquisition;
   image->acquired = true;
   image->encoded = false;
   image->drawn = false;
@@ -577,9 +545,6 @@ inline VkResult VKAPI_CALL HookAcquire(VkDevice device, VkSwapchainKHR swapchain
   return result;
 }
 
-// Temporarily suppress RenoDX's generic barrier mirroring for these exact
-// application images. Mirror the original Vk barrier ourselves, retaining its
-// access masks, stages, ranges and ownership, but map WSI layout to GENERAL.
 template <typename Barrier, typename Forward, typename Mirror>
 inline void ProcessBarriers(VkCommandBuffer command_buffer, uint32_t count,
                             const Barrier* barriers, Forward&& forward, Mirror&& mirror) {
@@ -656,12 +621,10 @@ inline void VKAPI_CALL HookDestroySwapchain(VkDevice device, VkSwapchainKHR swap
     const std::lock_guard lock(mutex);
     swapchains.erase(reinterpret_cast<uint64_t>(swapchain));
   }
-  // Native destruction owns GPU completion and triggers our resource cleanup.
+
   destroy_swapchain(device, swapchain, allocator);
   const std::lock_guard lock(mutex);
   if (swapchains.empty()) {
-    // Streamline has stopped its presentation work before we restore the base
-    // output path. Do not change a live physical pipeline during destruction.
     for (auto& [api_device, output] : outputs) {
       output.want_copy_only = false;
       SetPhysicalCopyOnly(api_device, false);
@@ -674,8 +637,7 @@ inline void OnPresent(reshade::api::swapchain* swapchain) {
   const std::lock_guard lock(mutex);
   const auto found = outputs.find(swapchain->get_device());
   if (found == outputs.end()) return;
-  // The enhancer's callback runs before the base addon's proxy callback.
-  // Invalidate cached pipelines on the physical presentation thread itself.
+
   auto& output = found->second;
   const auto back_buffer = swapchain->get_current_back_buffer();
   bool compatibility_mode = output.compatibility_mode;
@@ -686,19 +648,13 @@ inline void OnPresent(reshade::api::swapchain* swapchain) {
       compatibility_mode = proxy->second->use_compatibility_mode;
     }
   }
-  // Compatibility mode overwrites its input from the original PQ backbuffer.
-  // Direct-clone mode instead samples the FP16 destination of the native copy.
+
   const bool working = !compatibility_mode && output.working_copies.contains(back_buffer.handle);
-  const bool copy_only = output.want_copy_only && !working;
-  SetPhysicalCopyOnly(swapchain->get_device(), copy_only, back_buffer.handle);
+  SetPhysicalCopyOnly(swapchain->get_device(), output.want_copy_only && !working, back_buffer.handle);
 }
 
-// Observe before the base resource-upgrade copy callback. That callback selects
-// an EXISTING source clone when either endpoint has cloning enabled, even when
-// the source clone itself was disabled after Encode. The private clone remains
-// working HDR; only ImageState::original contains PQ. No copy/layout is changed.
 inline bool OnPresentationCopy(reshade::api::command_list*, reshade::api::resource source,
-                                reshade::api::resource dest) {
+                               reshade::api::resource dest) {
   if (!capture_graphics.load(std::memory_order_relaxed)) return false;
   const std::lock_guard lock(mutex);
   if (outputs.empty() || renodx::utils::resource::shared.data == nullptr) return false;
@@ -726,11 +682,9 @@ inline bool OnPresentationCopy(reshade::api::command_list*, reshade::api::resour
 }
 
 inline bool OnPresentationCopyRegion(reshade::api::command_list* cmd, reshade::api::resource source,
-    uint32_t source_subresource, const reshade::api::subresource_box* source_box,
-    reshade::api::resource dest, uint32_t dest_subresource,
-    const reshade::api::subresource_box* dest_box, reshade::api::filter_mode) {
-  // The supported presentation path copies a complete single-layer image.
-  // Partial copies do not establish a new whole-image encoding contract.
+                                     uint32_t source_subresource, const reshade::api::subresource_box* source_box,
+                                     reshade::api::resource dest, uint32_t dest_subresource,
+                                     const reshade::api::subresource_box* dest_box, reshade::api::filter_mode) {
   if (!capture_graphics.load(std::memory_order_relaxed)
       || source_subresource != 0u || dest_subresource != 0u
       || renodx::utils::resource::shared.data == nullptr) return false;
@@ -815,9 +769,6 @@ inline void OnDestroyDevice(reshade::api::device* device) {
   });
 }
 
-// Resolve through the active ReShade device, not Streamline's unused exports.
-// Core and KHR names alias one ReShade implementation in the supported build;
-// never attach twice to the same address or silently choose between two paths.
 inline bool ResolveBarrierDispatch(PFN_vkGetDeviceProcAddr get_proc, VkDevice device,
                                    PFN_vkCmdPipelineBarrier* legacy, PFN_vkCmdPipelineBarrier2* sync2) {
   *legacy = nullptr;
@@ -880,17 +831,15 @@ inline bool DetachHooks() {
 }
 
 inline void RegisterDrawCallbacks() {
-  // Called after the base addon has registered its shader callbacks, before
-  // the device starts drawing. Our format variant is bound after its injection.
   constexpr uint32_t command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW | renodx::utils::command_action::COMMAND_TYPE_INDIRECT;
-  // Unmodified final blits have no shader callback. Observe those as well.
+
   renodx::utils::command_action::Register(on_output_draw, {.command_types = command_types});
   for (const auto& [hash, callbacks] : renodx::utils::command_action::internal::shared.data->registrations) {
     if (hash == 0u) continue;
     renodx::utils::command_action::Register(on_output_draw,
                                             {.shader_hash = hash, .command_types = command_types});
   }
-  // Refresh active event masks now that the deferred draw registrations exist.
+
   renodx::utils::command_action::Use(DLL_PROCESS_ATTACH);
 }
 
@@ -898,8 +847,7 @@ inline void UseEvents(DWORD reason) {
   if (reason == DLL_PROCESS_ATTACH) {
     if (events_registered) return;
     events_registered = true;
-    // Register dependencies before exposing callbacks. RegisterDrawCallbacks
-    // joins command_action only; it does not initialize shader::shared.
+
     renodx::utils::shader::Use(reason);
     renodx::utils::state::Use(reason);
     renodx::utils::command_action::Use(reason);
@@ -932,4 +880,4 @@ inline void UseEvents(DWORD reason) {
   }
 }
 
-}  // namespace endfield::hdr_output
+}

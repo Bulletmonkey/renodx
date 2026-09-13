@@ -1,8 +1,7 @@
 #pragma once
 
 namespace endfield::ui_visibility::detail {
-// Executed in the game's existing Lua environment, only from LuaManager.Tick.
-// The cleanup callbacks contain no addon pointers and survive a hot unload.
+
 inline constexpr char kScript[] = R"lua(
 if not LuaUpdate or not UIManager or not PanelId or not CameraManager then return false end
 local name = '__RenoDXUIVisibility'
@@ -39,7 +38,6 @@ local function guarded(action)
     local ok, err = xpcall(action, debug.traceback)
     if not ok then
         s.failure = err
-        -- Keep the watchdog alive if an object is being destroyed mid-update.
         pcall(restore)
         pcall(restoreCamera)
     end
@@ -52,7 +50,6 @@ local function suspend(component)
         saved = { enabled = enabled }
         s.saved[component] = saved
     elseif enabled then
-        -- Preserve a later game-authored enable when releasing our override.
         saved.enabled = true
     end
     saved.generation = s.generation
@@ -60,8 +57,6 @@ local function suspend(component)
 end
 local function hide(target, excluded)
     if IsNull(target) then return end
-    -- pingCon is a container, not a Graphic. Traverse its renderers without
-    -- disabling its GameObject, and leave the numeric ping subtree alone.
     local object = target.gameObject
     local cached = s.targets[object]
     if not cached or cached.excluded ~= excluded or Time.realtimeSinceStartup >= cached.refresh then
@@ -85,19 +80,14 @@ local function apply()
     local all = s.mask % 2 == 1
     if s.camera and (not all or s.camera ~= CameraManager) then restoreCamera() end
     if all and not s.camera and CameraManager then
-        -- Own the key before calling the setter, so partial failure is reversible.
         s.camera = CameraManager
         s.camera:AddUICamCullingMaskConfig(key, 0)
     end
     if all and s.camera and not IsNull(s.camera.uiCamera) and s.camera.uiCamera.cullingMask ~= 0 then
-        -- A later game-owned config may become the current mask. Reassert our
-        -- own request without changing or removing any of the game's keys.
         s.camera:RemoveUICamCullingMaskConfig(key)
         s.camera:AddUICamCullingMaskConfig(key, 0)
     end
     if all then
-        -- World-space and overlay canvases can bypass the UI camera. Suppress
-        -- their rendering without replacing the scene camera's culling mask.
         for _, panel in pairs(UIManager.m_openedPanels) do
             local canvas = panel.view.panelCanvas
             if not IsNull(canvas) and (panel.panelCfg.isWorldUI or canvas.renderMode == 0) then
@@ -106,8 +96,6 @@ local function apply()
         end
     end
     local panels = UIManager.m_openedPanels
-    -- Reconcile at 10 Hz: HUD panels can close/recreate independently
-    -- of UIDPanel during scene, mode, and input-device changes.
     local quest = panels[PanelId.MissionHud]
     if math.floor(s.mask / 16) % 2 == 1 then
         if quest then hide(quest.view.panelCanvas, quest.view.openMissionPanelBtnWrapper) end
@@ -131,16 +119,11 @@ local function apply()
     end
     if math.floor(s.mask / 256) % 2 == 1 then
         local utility = panels[PanelId.GeneralAbility]
-        -- The game fades this HUD group separately when opening the selector.
-        -- Leave the panel canvas and selector background/choices rendering.
         if utility then hide(utility.view.selectedCanvasGroup) end
     end
     local ctrl = panels[PanelId.UIDPanel]
     if not ctrl then restore(true); return end
     local view = ctrl.view
-    -- Disable individual Graphic components, never their parent GameObjects.
-    -- Keep them hidden until their override is released; toggling Graphic.enabled
-    -- around every render invokes UI rebuilds even when settings are unchanged.
     if all or math.floor(s.mask / 2) % 2 == 1 then hide(view.text) end
     if all or math.floor(s.mask / 4) % 2 == 1 then hide(view.pingCon, view.pingNubTxt) end
     if all or math.floor(s.mask / 8) % 2 == 1 then hide(view.pingNubTxt) end
@@ -165,4 +148,4 @@ s.callbacks[2] = update:Add('TailTick', function()
 end)
 return true
 )lua";
-}  // namespace endfield::ui_visibility::detail
+}

@@ -1,7 +1,5 @@
 #pragma once
 
-// Included inside camera::detail, after motion. Pose and managed handles belong
-// to the game thread; ReShade publishes input through a separate mailbox.
 namespace freecam {
 inline std::atomic_bool requested{false}, active{false}, available{false};
 inline float speed = 5.f;
@@ -12,10 +10,8 @@ inline bool owns_mask = false;
 inline Vec3 position{};
 inline float heading = 0.f, elevation = 0.f, lens = 60.f;
 inline double last_tick = 0;
-inline std::atomic<float> submitted_heading{0.f}, submitted_elevation{0.f};
 inline std::atomic_bool read_mouse{false};
 inline std::atomic_long mouse_x{0}, mouse_y{0};
-inline std::atomic_uint mouse_packets{0};
 inline HHOOK mouse_hook = nullptr;
 inline DWORD mouse_thread = 0;
 inline SRWLOCK cursor_bounds_lock = SRWLOCK_INIT;
@@ -34,10 +30,6 @@ inline void ReleaseClip() {
   ReleaseSRWLockExclusive(&cursor_bounds_lock);
 }
 
-// ReShade clears ClipCursor after reshade_overlay. Apply only at the later
-// reshade_present event, using the native entry point it does not intercept.
-// On the supported Windows build user32!ClipCursor is a direct import thunk
-// to win32u!NtUserClipCursor with the identical single-RECT-pointer ABI.
 inline void OnCursorPresent(reshade::api::effect_runtime*) {
   if (!native_clip_cursor)
     native_clip_cursor = reinterpret_cast<decltype(native_clip_cursor)>(GetProcAddress(GetModuleHandleW(L"win32u.dll"), "NtUserClipCursor"));
@@ -53,23 +45,18 @@ inline void OnCursorPresent(reshade::api::effect_runtime*) {
   AcquireSRWLockExclusive(&cursor_bounds_lock);
   RECT actual{};
   const bool success = native_clip_cursor && native_clip_cursor(&bounds)
-      && GetClipCursor(&actual) && EqualRect(&actual, &bounds);
+                       && GetClipCursor(&actual) && EqualRect(&actual, &bounds);
   if (success) {
     applied_clip = bounds;
     clip_owned = true;
   }
   ReleaseSRWLockExclusive(&cursor_bounds_lock);
-  static int reported = -1;
-  if (reported != int(success)) {
-    reported = int(success);
-    Log(reshade::log::level::info, success
-        ? "Endfield enhancer: free camera native cursor clip verified"
-        : "Endfield enhancer: free camera native cursor clip failed verification");
-  }
+  static bool reported_failure = false;
+  if (!success && !reported_failure)
+    Log(reshade::log::level::warning, "Endfield enhancer: free camera native cursor clip failed verification");
+  reported_failure = !success;
 }
 
-// Observe existing raw-input messages before the game's input handling. Do not
-// replace its device registration, consume messages, or warp the OS cursor.
 inline LRESULT CALLBACK MouseMessages(int code, WPARAM removed, LPARAM message) {
   if (code == HC_ACTION && removed == PM_REMOVE && read_mouse.load(std::memory_order_relaxed)) {
     const auto* msg = reinterpret_cast<const MSG*>(message);
@@ -80,8 +67,6 @@ inline LRESULT CALLBACK MouseMessages(int code, WPARAM removed, LPARAM message) 
           && raw.header.dwType == RIM_TYPEMOUSE && !(raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
         mouse_x.fetch_add(raw.data.mouse.lLastX, std::memory_order_relaxed);
         mouse_y.fetch_add(raw.data.mouse.lLastY, std::memory_order_relaxed);
-        mouse_packets.fetch_add(1, std::memory_order_relaxed);
-
       }
     }
   }
@@ -115,13 +100,11 @@ inline void Release() {
   if (owns_mask) {
     try {
       void* args[]{&mask_handle};
-      // False means the game already removed this handle. Never clear masks
-      // owned by interactions, cutscenes, or another addon.
+
       movement::Call(remove_mask, gc_target(player_root), args);
       owns_mask = false;
-      Log(reshade::log::level::info, "Endfield enhancer: free camera released its player input mask");
     } catch (...) {
-      return; // Keep ownership and retry on the next game tick.
+      return;
     }
   }
   if (player_root) gc_free(player_root);
@@ -154,7 +137,6 @@ inline bool Apply(void* brain, void* state, MethodInfo* method) {
       return false;
     }
     if (!active.load()) {
-      // Capture the rendered view before releasing first-person presentation.
       position = Read<Vec3>(state, 0x80) + Read<Vec3>(state, 0xac);
       Quat rotation = Read<Quat>(state, 0x8c) * Read<Quat>(state, 0xb8);
       void* camera = Invoke(motion::output_camera, brain);
@@ -188,7 +170,6 @@ inline bool Apply(void* brain, void* state, MethodInfo* method) {
       input = {};
       ReleaseSRWLockExclusive(&input_lock);
       active.store(true);
-      Log(reshade::log::level::info, "Endfield enhancer: free camera active; player action mask verified zero");
     }
     AcquireSRWLockExclusive(&input_lock);
     const Input sample = input;
@@ -202,7 +183,7 @@ inline bool Apply(void* brain, void* state, MethodInfo* method) {
       elevation = std::clamp(elevation + sample.pitch, -89.f, 89.f);
       const Quat view = AxisAngle({0, 1, 0}, heading) * AxisAngle({1, 0, 0}, elevation);
       Vec3 direction = Rotate(view, {sample.move.x, 0, sample.move.z}) + Vec3{0, sample.move.y, 0};
-      const float length = std::sqrt(direction.x*direction.x + direction.y*direction.y + direction.z*direction.z);
+      const float length = std::sqrt(direction.x * direction.x + direction.y * direction.y + direction.z * direction.z);
       if (length > 1.f) direction = direction * (1.f / length);
       position = position + direction * (sample.speed * dt);
     }
@@ -215,8 +196,6 @@ inline bool Apply(void* brain, void* state, MethodInfo* method) {
     Write(copy.data(), 0x20, lens);
     Write(copy.data(), 0x30, 0.f);
     push_state(brain, copy.data(), method);
-    submitted_heading.store(heading);
-    submitted_elevation.store(elevation);
     return true;
   } catch (...) {
     requested.store(false);
@@ -239,13 +218,13 @@ inline bool Resolve(Il2CppImage game, int32_t (*value_size)(void*, uint32_t*),
   auto system = FindImage("mscorlib.dll");
   uint32_t alignment = 0;
   return (method_flags(player_controller, nullptr) & 0x10)
-      && !(method_flags(add_mask, nullptr) & 0x10) && !(method_flags(remove_mask, nullptr) & 0x10)
-      && class_from_type(return_type(player_controller)) == class_from_name(game, "Beyond.Gameplay.Core", "PlayerController")
-      && class_from_type(return_type(add_mask)) == class_from_name(system, "System", "UInt32")
-      && class_from_type(parameter(remove_mask, 0)) == class_from_name(system, "System", "UInt32")
-      && class_from_type(return_type(remove_mask)) == class_from_name(system, "System", "Boolean")
-      && class_from_type(parameter(add_mask, 0)) == class_from_type(return_type(get_mask))
-      && value_size(class_from_type(parameter(add_mask, 0)), &alignment) == 4;
+         && !(method_flags(add_mask, nullptr) & 0x10) && !(method_flags(remove_mask, nullptr) & 0x10)
+         && class_from_type(return_type(player_controller)) == class_from_name(game, "Beyond.Gameplay.Core", "PlayerController")
+         && class_from_type(return_type(add_mask)) == class_from_name(system, "System", "UInt32")
+         && class_from_type(parameter(remove_mask, 0)) == class_from_name(system, "System", "UInt32")
+         && class_from_type(return_type(remove_mask)) == class_from_name(system, "System", "Boolean")
+         && class_from_type(parameter(add_mask, 0)) == class_from_type(return_type(get_mask))
+         && value_size(class_from_type(parameter(add_mask, 0)), &alignment) == 4;
 }
 
 struct Controls {
@@ -253,21 +232,19 @@ struct Controls {
   bool down = false, up = false, boost = false;
 };
 inline void OnFrame(reshade::api::effect_runtime* runtime, const Controls& controls, bool allow_input = true) {
-  static ULONGLONG diagnostic_time = 0;
   const bool focused = runtime->get_hwnd() == GetForegroundWindow();
   if (!focused || !ReadValues().enabled || !available.load()) requested.store(false);
   if (allow_input && !ImGui::GetIO().WantCaptureKeyboard && controls.exit) requested.store(false);
   Input sample;
   sample.stamp = GetTickCount64();
   const bool looking = focused && requested.load() && active.load() && allow_input
-      && !ImGui::GetIO().WantCaptureKeyboard && !ImGui::GetIO().WantCaptureMouse;
+                       && !ImGui::GetIO().WantCaptureKeyboard && !ImGui::GetIO().WantCaptureMouse;
   if (looking && (!mouse_hook || mouse_thread != GetWindowThreadProcessId(static_cast<HWND>(runtime->get_hwnd()), nullptr))) {
     StopMouse();
     mouse_thread = GetWindowThreadProcessId(static_cast<HWND>(runtime->get_hwnd()), nullptr);
     if (mouse_thread) mouse_hook = SetWindowsHookExW(WH_GETMESSAGE, MouseMessages, endfield::runtime_status::addon_module, mouse_thread);
-    Log(reshade::log::level::info, mouse_hook
-        ? "Endfield enhancer: free camera relative mouse listener installed"
-        : "Endfield enhancer: free camera relative mouse listener unavailable");
+    if (!mouse_hook)
+      Log(reshade::log::level::warning, "Endfield enhancer: free camera relative mouse listener unavailable");
   }
   RECT bounds{};
   HWND window = static_cast<HWND>(runtime->get_hwnd());
@@ -277,8 +254,10 @@ inline void OnFrame(reshade::api::effect_runtime* runtime, const Controls& contr
       LogicalToPhysicalPointForPerMonitorDPI(window, &top_left);
       LogicalToPhysicalPointForPerMonitorDPI(window, &bottom_right);
       bounds = {top_left.x, top_left.y, bottom_right.x, bottom_right.y};
-    } else window = nullptr;
-  } else window = nullptr;
+    } else
+      window = nullptr;
+  } else
+    window = nullptr;
   AcquireSRWLockExclusive(&cursor_bounds_lock);
   cursor_bounds = bounds;
   cursor_window = window;
@@ -299,18 +278,10 @@ inline void OnFrame(reshade::api::effect_runtime* runtime, const Controls& contr
       }
     }
   }
-  if (active.load() && sample.stamp - diagnostic_time >= 2000) {
-    diagnostic_time = sample.stamp;
-    char text[256];
-    std::snprintf(text, sizeof(text), "Endfield enhancer: free camera look focused=%d allowed=%d mouse_capture=%d keyboard_capture=%d delta=(%.2f,%.2f) submitted=(%.2f,%.2f) raw_packets=%u",
-        focused, allow_input, ImGui::GetIO().WantCaptureMouse, ImGui::GetIO().WantCaptureKeyboard,
-        sample.yaw, sample.pitch, submitted_heading.load(), submitted_elevation.load(), mouse_packets.exchange(0));
-    Log(reshade::log::level::info, text);
-  }
   AcquireSRWLockExclusive(&input_lock);
   sample.yaw += input.yaw;
   sample.pitch += input.pitch;
   input = sample;
   ReleaseSRWLockExclusive(&input_lock);
 }
-} // namespace freecam
+}

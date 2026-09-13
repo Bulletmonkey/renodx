@@ -3,7 +3,6 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -20,7 +19,6 @@
 #include "./ssr_depth.hpp"
 
 namespace endfield::enhancer {
-
 inline float fps_unlock = 0.f;
 inline float fps_limit = 120.f;
 inline float frame_generation_fps_limit = 240.f;
@@ -36,7 +34,6 @@ inline float dof_far_blur = 5.f;
 inline float hdr_frame_generation = 0.f;
 
 namespace detail {
-
 inline constexpr uint32_t kHDR10Format =
     static_cast<uint32_t>(VK_FORMAT_A2B10G10R10_UNORM_PACK32);
 
@@ -112,19 +109,15 @@ struct DoFManualOffsets {
 inline DoFManualOffsets dof_manual = {};
 inline size_t native_camera_instance_id_offset = 0;
 inline ObjectWithInstanceIDExists object_with_instance_id_exists = nullptr;
-// Low bits: full resolution (1), full depth (2). Remaining bits: choice
-// generation, so dormant cameras cannot miss a switch away and back.
+
 inline std::atomic_uint64_t ssr_resolution_state = 0;
 struct SsrInstanceState {
-  void* instance = nullptr;  // Identity only; never dereferenced from the cache.
+  void* instance = nullptr;
   uint64_t resolution_state = 0;
 };
 inline std::array<SsrInstanceState, 64> ssr_instances = {};
 inline size_t ssr_next_instance = 0;
 inline SRWLOCK ssr_instances_lock = SRWLOCK_INIT;
-inline std::atomic_uint64_t ssr_last_logged_dimensions = 0;
-inline std::atomic_bool ssr_router_observed = false;
-inline std::array<uint8_t, 16> ssr_installed_entry = {};
 inline std::atomic_bool ssr_resolution_failed = false;
 inline std::atomic<float> dof_resolution_override = 0.f;
 inline std::atomic_bool dof_force_override = false;
@@ -143,9 +136,6 @@ inline bool hdr_hooks_installed = false;
 inline std::mutex streamline_options_mutex;
 inline std::mutex streamline_install_mutex;
 inline std::atomic_bool frame_generation_presenting = false;
-inline std::atomic_bool hdr_format_logged = false;
-inline std::atomic_bool hdr_swapchain_logged = false;
-inline std::atomic_bool hdr_hudless_suppressed_logged = false;
 inline std::atomic_bool frame_generation_paused = true;
 inline bool gtao_ready = false;
 inline bool fps_applied = false;
@@ -166,7 +156,6 @@ struct GtaoDimensions {
   bool modified = false;
 };
 inline thread_local GtaoDimensions gtao_dimensions;
-inline std::atomic_bool gtao_write_logged = false;
 
 inline void Log(reshade::log::level level, const char* message) {
   reshade::log::message(level, message);
@@ -253,10 +242,7 @@ inline bool ResolveCppFieldOffset(
   return true;
 }
 
-// The engine's own reset releases graph references and marks firstFrame.
-// Do this on the graph-building thread, not from the UI/present callback.
-inline bool ResetSsrHistoryForResolution(void* self, uint64_t resolution_state) {
-  bool reset = false;
+inline void ResetSsrHistoryForResolution(void* self, uint64_t resolution_state) {
   AcquireSRWLockExclusive(&ssr_instances_lock);
   __try {
     SsrInstanceState* state = nullptr;
@@ -266,13 +252,12 @@ inline bool ResetSsrHistoryForResolution(void* self, uint64_t resolution_state) 
         break;
       }
     }
-    // After any live change, an evicted/new identity is conservatively reset.
-    // Before the first change, the startup path remains untouched.
-    reset = resolution_state >= 4
-            && (state == nullptr || state->resolution_state != resolution_state);
-    if (reset) reset_ssr(self);
-    // Publish only after reset succeeds. Native exceptions propagate and the
-    // finally block unlocks; a failed reset never consumes this generation.
+
+    if (resolution_state >= 4
+        && (state == nullptr || state->resolution_state != resolution_state)) {
+      reset_ssr(self);
+    }
+
     if (state == nullptr) {
       state = &ssr_instances[ssr_next_instance];
       ssr_next_instance = (ssr_next_instance + 1) % ssr_instances.size();
@@ -281,12 +266,8 @@ inline bool ResetSsrHistoryForResolution(void* self, uint64_t resolution_state) 
   } __finally {
     ReleaseSRWLockExclusive(&ssr_instances_lock);
   }
-  return reset;
 }
 
-// UnityPlayer's SSR-only graph input is stack-local in both native callers.
-// Offset 0x14 selects the built-in full-size branch in both SSR implementations.
-// Do not change the shared camera mode, source dimensions, or quality settings.
 inline void HookedRenderSsr(
     void* self, void* graph, int32_t pass, void* input, void* output, bool wetness) {
   RenderQualityOverrides quality;
@@ -294,9 +275,6 @@ inline void HookedRenderSsr(
   const auto* previous_depth_context = ssr_depth::active;
   const uint64_t resolution_state = ssr_resolution_state.load(std::memory_order_relaxed);
   bool prepare_resolution = false;
-  if (!ssr_router_observed.exchange(true, std::memory_order_relaxed)) {
-    Log(reshade::log::level::info, "Endfield enhancer: UnityPlayer SSR router entered.");
-  }
   if (!shutting_down.load(std::memory_order_relaxed)
       && !ssr_resolution_failed.load(std::memory_order_relaxed)
       && input != nullptr && self != nullptr && reset_ssr != nullptr) {
@@ -306,30 +284,11 @@ inline void HookedRenderSsr(
       const int32_t height = *reinterpret_cast<const int32_t*>(data + 0x08);
       if (data[0] != 0 && (wetness || data[3] == 0) && width > 0 && height > 0
           && width <= 16384 && height <= 16384) {
-        const int32_t original_mode = *reinterpret_cast<const int32_t*>(data + 0x14);
         if ((resolution_state & 1) != 0) {
           quality.Set<int32_t>(input, 0x14, 4);
         }
         depth_context.width = width;
         depth_context.height = height;
-        const uint64_t dimensions =
-            (static_cast<uint64_t>(width) << 32) | static_cast<uint32_t>(height);
-        if (ssr_last_logged_dimensions.exchange(dimensions, std::memory_order_relaxed)
-            != dimensions) {
-          auto* settings = *reinterpret_cast<const uint8_t* const*>(data + 0x18);
-          auto* debug = *reinterpret_cast<const uint8_t* const*>(data + 0x28);
-          const bool v2 = debug != nullptr && debug[0x122] != 0
-                              ? debug[0x123] != 0
-                              : settings != nullptr && settings[0x1E1] != 0;
-          char message[256];
-          std::snprintf(
-              message, sizeof(message),
-              "Endfield enhancer: UnityPlayer SSR router reached (V%d, source %dx%d, mode %d -> %d, full-resolution request %s). GPU dimensions require capture verification.",
-              v2 ? 2 : 1, width, height, original_mode,
-              *reinterpret_cast<const int32_t*>(data + 0x14),
-              (resolution_state & 1) != 0 ? "on" : "off");
-          Log(reshade::log::level::info, message);
-        }
         prepare_resolution = true;
       }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -339,19 +298,12 @@ inline void HookedRenderSsr(
           "Endfield enhancer: native SSR input access failed; override disabled until restart.");
     }
   }
-  // Preserve native exceptions and always restore our temporary input write.
+
   __try {
     ssr_depth::active = prepare_resolution && (resolution_state & 2) != 0
-                            ? &depth_context : nullptr;
-    if (prepare_resolution && ResetSsrHistoryForResolution(self, resolution_state)) {
-      char message[160];
-      std::snprintf(message, sizeof(message),
-                    "Endfield enhancer: SSR history reset for instance %p; resolution %s, full depth %s (generation %llu).",
-                    self, (resolution_state & 1) != 0 ? "Native" : "Vanilla",
-                    (resolution_state & 2) != 0 ? "on" : "off",
-                    static_cast<unsigned long long>(resolution_state >> 2));
-      Log(reshade::log::level::info, message);
-    }
+                            ? &depth_context
+                            : nullptr;
+    if (prepare_resolution) ResetSsrHistoryForResolution(self, resolution_state);
     render_ssr(self, graph, pass, input, output, wetness);
   } __finally {
     if (!quality.Restore()) {
@@ -394,9 +346,7 @@ inline bool ValidateNativeSsrRouter(
              && module_nt->FileHeader.TimeDateStamp == timestamp
              && module_nt->OptionalHeader.SizeOfImage == image_size;
     };
-    // The hook depends on UnityPlayer, not the regional launcher executable.
-    // CN protection packaging changes SizeOfImage; all target bytes below
-    // were verified in both clients (tests/cn_compatibility_evidence.md).
+
     if (!has_identity(
             unity_player,
             kSupportedAssemblyTimestamp,
@@ -421,8 +371,6 @@ inline bool ValidateNativeSsrRouter(
       return false;
     }
 
-    // Guard the router calls and both full-resolution branches as well as
-    // the entry point. Never reinterpret an updated engine's input layout.
     constexpr uint8_t kV2Call[] = {0xE8, 0x44, 0x83, 0xD0, 0xFF};
     constexpr uint8_t kV1Call[] = {0xE8, 0xC5, 0x8A, 0x20, 0x01};
     constexpr uint8_t kV2Branch[] = {
@@ -436,8 +384,7 @@ inline bool ValidateNativeSsrRouter(
         0x44, 0x8B, 0x6D, 0x94, 0x44, 0x8B, 0x75, 0x90,
         0x44, 0x89, 0x6D, 0xD8, 0x44, 0x89, 0x75, 0xE0,
         0x48, 0x89, 0x5D, 0x48, 0xE9, 0xB6, 0x0E, 0x2E, 0xFF};
-    // Exact complete reset and reference-release functions, plus both native
-    // callers. These govern persistent history ownership during live changes.
+
     constexpr uint8_t kSsrReset[] = {
         0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x30, 0x48, 0x8B,
         0xD9, 0xC6, 0x41, 0x28, 0x01, 0x33, 0xFF, 0x89, 0x79, 0x04, 0x33, 0xC9,
@@ -534,10 +481,10 @@ inline bool InstallSsrResolutionHook() {
       reinterpret_cast<uint8_t*>(unity_player) + 0xE62580);
   ssr_depth::add_read = reinterpret_cast<ssr_depth::AddRead>(
       reinterpret_cast<uint8_t*>(unity_player) + 0xF4E5F8);
-  // Initial choice precedes all graph/history creation. Later choices carry
-  // a generation and reset each instance on its next native render call.
+
   ssr_resolution_state.store((ssr_resolution == 1.f ? 1u : 0u)
-                                | (ssr_full_depth == 1.f ? 2u : 0u), std::memory_order_relaxed);
+                                 | (ssr_full_depth == 1.f ? 2u : 0u),
+                             std::memory_order_relaxed);
   if (ssr_resolution == 2.f) {
     Log(reshade::log::level::warning,
         "Endfield enhancer: obsolete Double SSR selection is unsupported; using vanilla.");
@@ -556,12 +503,7 @@ inline bool InstallSsrResolutionHook() {
     render_ssr = nullptr;
     return false;
   }
-  std::memcpy(ssr_installed_entry.data(),
-              reinterpret_cast<const uint8_t*>(unity_player) + 0x4A7D70,
-              ssr_installed_entry.size());
   ssr_resolution_hook_installed = true;
-  Log(reshade::log::level::info,
-      "Endfield enhancer: UnityPlayer SSR router hook installed; awaiting native render call.");
   return true;
 }
 
@@ -577,9 +519,9 @@ inline Il2CppMethod FindMethod(
              : class_get_method_from_name(type, method_name, parameter_count);
 }
 
-inline bool ReadInt(Il2CppMethod method, int* value, void** parameters = nullptr) {
+inline bool ReadInt(Il2CppMethod method, int* value) {
   void* exception = nullptr;
-  void* result = runtime_invoke(method, nullptr, parameters, &exception);
+  void* result = runtime_invoke(method, nullptr, nullptr, &exception);
   if (result == nullptr || exception != nullptr) return false;
   void* unboxed = object_unbox(result);
   if (unboxed == nullptr) return false;
@@ -614,10 +556,6 @@ inline bool ResolveFpsMethods() {
               && get_vsync_count != nullptr
               && set_vsync_count != nullptr;
 
-  if (fps_ready) {
-    Log(reshade::log::level::info,
-        "Endfield enhancer: resolved FPS controls from IL2CPP metadata.");
-  }
   return fps_ready;
 }
 
@@ -625,22 +563,8 @@ __declspec(noinline) inline sl::Result ForwardFrameGenerationOptionsLocked(
     const sl::ViewportHandle& viewport,
     const sl::DLSSGOptions& options) {
   sl::DLSSGOptions forwarded_options = options;
-  const bool enable_hdr = hdr_hooks_installed;
-  if (enable_hdr) {
+  if (hdr_hooks_installed) {
     forwarded_options.colorBufferFormat = kHDR10Format;
-  }
-
-  // Record changes only, to diagnose native window resizing with DLSS-G.
-  static uint32_t logged_options[5] = {};
-  const uint32_t current_options[] = {options.colorWidth, options.colorHeight,
-      options.mvecDepthWidth, options.mvecDepthHeight, static_cast<uint32_t>(options.mode)};
-  if (std::memcmp(logged_options, current_options, sizeof(current_options)) != 0) {
-    std::memcpy(logged_options, current_options, sizeof(current_options));
-    char message[256];
-    std::snprintf(message, sizeof(message),
-        "Endfield resize: DLSS-G options color=%ux%u depth/motion=%ux%u mode=%u.",
-        current_options[0], current_options[1], current_options[2], current_options[3], current_options[4]);
-    Log(reshade::log::level::info, message);
   }
 
   frame_generation_presenting.store(false, std::memory_order_release);
@@ -657,15 +581,9 @@ __declspec(noinline) inline sl::Result ForwardFrameGenerationOptionsLocked(
   if (result != sl::Result::eOk) return result;
 
   __try {
-    const bool presenting = options.mode != sl::DLSSGMode::eOff
-                            && options.numFramesToGenerate != 0u;
     frame_generation_presenting.store(
-        presenting, std::memory_order_relaxed);
-    if (enable_hdr && presenting
-        && !hdr_format_logged.exchange(true, std::memory_order_relaxed)) {
-      Log(reshade::log::level::info,
-          "Endfield enhancer: DLSS-G color buffer configured for Vulkan HDR10.");
-    }
+        options.mode != sl::DLSSGMode::eOff && options.numFramesToGenerate != 0u,
+        std::memory_order_relaxed);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     frame_generation_presenting.store(false, std::memory_order_relaxed);
   }
@@ -682,29 +600,7 @@ inline sl::Result HookedSetFrameGenerationOptions(
 inline const sl::ResourceTag* FilterFrameGenerationTags(
     const sl::ResourceTag* tags,
     uint32_t num_tags) {
-  if (tags == nullptr || num_tags == 0u) {
-    return tags;
-  }
-
-  // Per-thread dimensions only: rotating image handles must not spam the log.
-  thread_local uint64_t logged_extents[3] = {};
-  for (uint32_t i = 0; i < num_tags; ++i) {
-    const auto& tag = tags[i];
-    const int slot = tag.type == sl::kBufferTypeDepth ? 0
-        : tag.type == sl::kBufferTypeMotionVectors ? 1
-        : tag.type == sl::kBufferTypeHUDLessColor ? 2 : -1;
-    if (slot < 0 || tag.resource == nullptr) continue;
-    const uint64_t extent = (static_cast<uint64_t>(tag.extent.width) << 32) | tag.extent.height;
-    if (logged_extents[slot] == extent) continue;
-    logged_extents[slot] = extent;
-    char message[256];
-    std::snprintf(message, sizeof(message),
-        "Endfield resize: DLSS-G tag type=%u region=%u,%u %ux%u resource=%ux%u.",
-        static_cast<uint32_t>(tag.type), tag.extent.left, tag.extent.top,
-        tag.extent.width, tag.extent.height, tag.resource->width, tag.resource->height);
-    Log(reshade::log::level::info, message);
-  }
-  if (!hdr_hooks_installed) return tags;
+  if (tags == nullptr || num_tags == 0u || !hdr_hooks_installed) return tags;
 
   bool has_hudless_color = false;
   for (uint32_t i = 0u; i < num_tags; ++i) {
@@ -720,19 +616,10 @@ inline const sl::ResourceTag* FilterFrameGenerationTags(
   filtered_tags.assign(tags, tags + num_tags);
   for (auto& tag : filtered_tags) {
     if (tag.type == sl::kBufferTypeHUDLessColor) {
-      // Endfield tags this before RenoDX's final PQ output pass. DLSS-G
-      // requires HUD-less color to match the final backbuffer color space, so
-      // remove the incompatible tag and let it use the HDR10 backbuffer.
       tag.resource = nullptr;
     }
   }
 
-  if (!hdr_hudless_suppressed_logged.exchange(
-          true, std::memory_order_relaxed)) {
-    Log(
-        reshade::log::level::info,
-        "Endfield enhancer: suppressed the incompatible pre-output HUD-less tag; DLSS-G will use the application color image.");
-  }
   return filtered_tags.data();
 }
 
@@ -779,22 +666,8 @@ inline VkResult VKAPI_CALL HookedStreamlineCreateSwapchain(
       use_hdr ? &hdr_create_info : create_info,
       allocator,
       swapchain);
-  if (result == VK_SUCCESS && create_info != nullptr) {
-    char message[192];
-    std::snprintf(message, sizeof(message),
-        "Endfield resize: application swapchain=%ux%u DLSS-G presenting=%u.",
-        create_info->imageExtent.width, create_info->imageExtent.height,
-        frame_generation_presenting.load(std::memory_order_relaxed) ? 1u : 0u);
-    Log(reshade::log::level::info, message);
-  }
   if (result == VK_SUCCESS && use_hdr && swapchain != nullptr) {
-    endfield::hdr_output::TrackSwapchain(device, *swapchain, hdr_create_info);
-  }
-  if (result == VK_SUCCESS && use_hdr
-      && !hdr_swapchain_logged.exchange(true, std::memory_order_relaxed)) {
-    Log(
-        reshade::log::level::info,
-        "Endfield enhancer: upgraded Streamline's app-facing swapchain request to RGB10A2 HDR10 before DLSS-G initialization.");
+    endfield::hdr_output::TrackSwapchain(*swapchain, hdr_create_info);
   }
   return result;
 }
@@ -824,7 +697,7 @@ inline bool InstallStreamlineHook(reshade::api::device* device) {
 
   set_frame_generation_options =
       reinterpret_cast<PFun_slDLSSGSetOptions*>(set_options);
-  // FPS limiting only needs SetOptions. The HDR path is fixed at startup.
+
   const bool enable_hdr = endfield::hdr_output::events_registered;
   if (enable_hdr) {
     set_tags = reinterpret_cast<PFun_slSetTag*>(
@@ -846,10 +719,7 @@ inline bool InstallStreamlineHook(reshade::api::device* device) {
   if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
       || DetourAttach(&set_frame_generation_options, HookedSetFrameGenerationOptions)
              != NO_ERROR
-      || (enable_hdr && (DetourAttach(&set_tags, HookedSetTags) != NO_ERROR
-                         || DetourAttach(&set_tags_for_frame, HookedSetTagsForFrame) != NO_ERROR
-                         || DetourAttach(&streamline_create_swapchain, HookedStreamlineCreateSwapchain) != NO_ERROR
-                         || !endfield::hdr_output::AttachHooks(interposer, reinterpret_cast<VkDevice>(device->get_native()))))) {
+      || (enable_hdr && (DetourAttach(&set_tags, HookedSetTags) != NO_ERROR || DetourAttach(&set_tags_for_frame, HookedSetTagsForFrame) != NO_ERROR || DetourAttach(&streamline_create_swapchain, HookedStreamlineCreateSwapchain) != NO_ERROR || !endfield::hdr_output::AttachHooks(interposer, reinterpret_cast<VkDevice>(device->get_native()))))) {
     DetourTransactionAbort();
     set_frame_generation_options = nullptr;
     set_tags = nullptr;
@@ -870,7 +740,6 @@ inline bool InstallStreamlineHook(reshade::api::device* device) {
   if (enable_hdr) {
     endfield::hdr_output::capture_graphics.store(true, std::memory_order_relaxed);
     endfield::hdr_output::RegisterDrawCallbacks();
-    Log(reshade::log::level::info, "Endfield HDR: native output hooks enabled.");
   }
   return true;
 }
@@ -900,7 +769,7 @@ inline void HookedRenderPath(
         auto* height = reinterpret_cast<int32_t*>(settings + gtao_height_offset);
         const uint32_t multiplier = gtao_resolution_multiplier.load(std::memory_order_relaxed);
 
-        if (multiplier == 2 || multiplier == 4) {
+        if (multiplier == 2) {
           if (!gtao_dimensions.modified
               || gtao_dimensions.settings != gtao
               || *width != gtao_dimensions.written_width
@@ -919,19 +788,6 @@ inline void HookedRenderPath(
             *width = gtao_dimensions.written_width;
             *height = gtao_dimensions.written_height;
             gtao_dimensions.modified = true;
-
-            if (!gtao_write_logged.exchange(true, std::memory_order_relaxed)) {
-              char message[192] = {};
-              std::snprintf(
-                  message,
-                  sizeof(message),
-                  "Endfield enhancer: GTAO resolution override (%dx%d -> %dx%d).",
-                  gtao_dimensions.source_width,
-                  gtao_dimensions.source_height,
-                  gtao_dimensions.written_width,
-                  gtao_dimensions.written_height);
-              Log(reshade::log::level::info, message);
-            }
           } else if (gtao_dimensions.modified) {
             if (*width == gtao_dimensions.written_width && *height == gtao_dimensions.written_height) {
               *width = gtao_dimensions.source_width;
@@ -964,8 +820,6 @@ inline void HookedRenderPath(
         && !quality_access_failed.load(std::memory_order_relaxed)
         && render_path_params != nullptr && before_culling_params != nullptr) {
       __try {
-        // The native render entry copies settingParameters from pre-culling.
-        // Use that same block, not the possibly stale render-params pointer.
         const float dof_scale = dof_resolution_override.load(std::memory_order_relaxed);
         const bool manual_dof = dof_force_override.load(std::memory_order_relaxed);
         if ((dof_resolution_ready && dof_scale != 0.f)
@@ -980,20 +834,16 @@ inline void HookedRenderPath(
                 quality.Set<uint8_t>(native_settings, dof_scale_adjust_offset, 0);
                 quality.Set<float>(dof, dof_scale_offset, dof_scale);
               }
-              // Inactive DoF data can contain a stale, nonzero camera ID. Use the
-              // live native camera supplied to HGRenderPath_Render instead.
+
               if (dof_force_ready && manual_dof && camera != nullptr
                   && object_with_instance_id_exists != nullptr) {
                 const int32_t camera_id = *reinterpret_cast<const int32_t*>(
                     static_cast<const uint8_t*>(camera) + native_camera_instance_id_offset);
                 if (camera_id != 0 && object_with_instance_id_exists(camera_id)) {
-                  // HGDepthOfFieldQuality::HighFarNear. No method override when
-                  // Force DoF is off, including native cutscene cameras.
                   quality.Set<int32_t>(native_settings, dof_quality_offset, 0);
                   quality.Set<int32_t>(dof, dof_manual.camera, camera_id);
                   const float focus = dof_focus_override.load(std::memory_order_relaxed);
-                  // Manual focus keeps a sharp band around the selected distance.
-                  // Positive, separated ranges also avoid zero-width CoC ramps.
+
                   quality.Set<uint8_t>(dof, dof_manual.physical, 0);
                   quality.Set<float>(dof, dof_manual.focus, focus);
                   quality.Set<float>(dof, dof_manual.aperture, 16.f);
@@ -1005,14 +855,13 @@ inline void HookedRenderPath(
                   quality.Set<float>(dof, dof_manual.far_radius, dof_far_override.load(std::memory_order_relaxed));
                   quality.Set<float>(dof, dof_manual.temporal, 0.5f);
                   quality.Set<float>(native_settings, dof_manual.max_radius, 10.f);
-                  // Inactive parameters come from an uncleared frame arena.
-                  // Do not inherit a debug flag or even a valid-looking scale.
+
                   quality.Set<uint8_t>(dof, dof_manual.debug, 0);
                   if (!(dof_resolution_ready && dof_scale != 0.f)) quality.Set<float>(dof, dof_scale_offset, 0.5f);
-                  // Enable only after the complete manual parameter set is ready.
+
                   quality.Set<uint8_t>(dof, dof_manual.enable,
-                      dof_near_override.load(std::memory_order_relaxed) > 0.f
-                          || dof_far_override.load(std::memory_order_relaxed) > 0.f);
+                                       dof_near_override.load(std::memory_order_relaxed) > 0.f
+                                           || dof_far_override.load(std::memory_order_relaxed) > 0.f);
                 }
               }
             }
@@ -1082,25 +931,25 @@ inline bool InstallRenderPathHook() {
       && ResolveCppFieldOffset(before_culling, "settingParameters", nullptr, &before_culling_settings_offset)) {
     dof_quality_ready = ResolveCppFieldOffset(quality_settings, "depthOfFieldQuality", nullptr, &dof_quality_offset);
     const bool dof_parameters_ready = dof_settings != nullptr
-        && ResolveCppFieldOffset(render_params, "dofParameters", nullptr, &render_params_dof_offset)
-        && ResolveCppFieldOffset(dof_settings, "scale", nullptr, &dof_scale_offset);
+                                      && ResolveCppFieldOffset(render_params, "dofParameters", nullptr, &render_params_dof_offset)
+                                      && ResolveCppFieldOffset(dof_settings, "scale", nullptr, &dof_scale_offset);
     dof_resolution_ready = dof_parameters_ready
-        && ResolveCppFieldOffset(quality_settings, "depthOfFieldScaleAdjust", nullptr, &dof_scale_adjust_offset);
+                           && ResolveCppFieldOffset(quality_settings, "depthOfFieldScaleAdjust", nullptr, &dof_scale_adjust_offset);
     dof_force_ready = dof_parameters_ready && dof_quality_ready
-        && ResolveCppFieldOffset(dof_settings, "enable", nullptr, &dof_manual.enable)
-        && ResolveCppFieldOffset(dof_settings, "debug", nullptr, &dof_manual.debug)
-        && ResolveCppFieldOffset(dof_settings, "camera", nullptr, &dof_manual.camera)
-        && ResolveCppFieldOffset(dof_settings, "usePhysicalCamera", nullptr, &dof_manual.physical)
-        && ResolveCppFieldOffset(dof_settings, "focusDistance", nullptr, &dof_manual.focus)
-        && ResolveCppFieldOffset(dof_settings, "aperture", nullptr, &dof_manual.aperture)
-        && ResolveCppFieldOffset(dof_settings, "nearFocusStart", nullptr, &dof_manual.near_start)
-        && ResolveCppFieldOffset(dof_settings, "nearFocusEnd", nullptr, &dof_manual.near_end)
-        && ResolveCppFieldOffset(dof_settings, "nearRadius", nullptr, &dof_manual.near_radius)
-        && ResolveCppFieldOffset(dof_settings, "farFocusStart", nullptr, &dof_manual.far_start)
-        && ResolveCppFieldOffset(dof_settings, "farFocusEnd", nullptr, &dof_manual.far_end)
-        && ResolveCppFieldOffset(dof_settings, "farRadius", nullptr, &dof_manual.far_radius)
-        && ResolveCppFieldOffset(dof_settings, "temporalFactor", nullptr, &dof_manual.temporal)
-        && ResolveCppFieldOffset(quality_settings, "depthOfFieldMaxRadius", nullptr, &dof_manual.max_radius);
+                      && ResolveCppFieldOffset(dof_settings, "enable", nullptr, &dof_manual.enable)
+                      && ResolveCppFieldOffset(dof_settings, "debug", nullptr, &dof_manual.debug)
+                      && ResolveCppFieldOffset(dof_settings, "camera", nullptr, &dof_manual.camera)
+                      && ResolveCppFieldOffset(dof_settings, "usePhysicalCamera", nullptr, &dof_manual.physical)
+                      && ResolveCppFieldOffset(dof_settings, "focusDistance", nullptr, &dof_manual.focus)
+                      && ResolveCppFieldOffset(dof_settings, "aperture", nullptr, &dof_manual.aperture)
+                      && ResolveCppFieldOffset(dof_settings, "nearFocusStart", nullptr, &dof_manual.near_start)
+                      && ResolveCppFieldOffset(dof_settings, "nearFocusEnd", nullptr, &dof_manual.near_end)
+                      && ResolveCppFieldOffset(dof_settings, "nearRadius", nullptr, &dof_manual.near_radius)
+                      && ResolveCppFieldOffset(dof_settings, "farFocusStart", nullptr, &dof_manual.far_start)
+                      && ResolveCppFieldOffset(dof_settings, "farFocusEnd", nullptr, &dof_manual.far_end)
+                      && ResolveCppFieldOffset(dof_settings, "farRadius", nullptr, &dof_manual.far_radius)
+                      && ResolveCppFieldOffset(dof_settings, "temporalFactor", nullptr, &dof_manual.temporal)
+                      && ResolveCppFieldOffset(quality_settings, "depthOfFieldMaxRadius", nullptr, &dof_manual.max_radius);
     if (dof_force_ready) {
       ResolveICall resolve_icall = nullptr;
       dof_force_ready = ResolveExport(GetModuleHandleW(L"GameAssembly.dll"), "il2cpp_resolve_icall", &resolve_icall);
@@ -1111,7 +960,7 @@ inline bool InstallRenderPathHook() {
             resolve_icall("UnityEngine.Object::DoesObjectWithInstanceIDExist(System.Int32)"));
         const int32_t offset = get_instance_id_offset == nullptr ? -1 : get_instance_id_offset();
         dof_force_ready = offset >= static_cast<int32_t>(sizeof(void*)) && offset < 0x100
-            && offset % alignof(int32_t) == 0 && object_with_instance_id_exists != nullptr;
+                          && offset % alignof(int32_t) == 0 && object_with_instance_id_exists != nullptr;
         if (dof_force_ready) native_camera_instance_id_offset = static_cast<size_t>(offset);
       }
       if (!dof_force_ready) {
@@ -1134,20 +983,10 @@ inline bool InstallRenderPathHook() {
 
   render_path_hook_installed = true;
   gtao_ready = true;
-  Log(reshade::log::level::info,
-      dof_quality_ready && dof_resolution_ready && dof_force_ready
-          ? "Endfield enhancer: DoF quality controls resolved from IL2CPP metadata."
-          : "Endfield enhancer: some DoF quality fields are unavailable; their overrides will be skipped.");
-  char message[224] = {};
-  std::snprintf(
-      message,
-      sizeof(message),
-      "Endfield enhancer: render-path metadata hook ready (GTAO params=0x%zX, width=0x%zX, height=0x%zX, FG pause=0x%zX).",
-      render_params_gtao_offset,
-      gtao_width_offset,
-      gtao_height_offset,
-      render_params_frame_generation_pause_offset);
-  Log(reshade::log::level::info, message);
+  if (!dof_quality_ready || !dof_resolution_ready || !dof_force_ready) {
+    Log(reshade::log::level::warning,
+        "Endfield enhancer: some DoF quality fields are unavailable; their overrides will be skipped.");
+  }
   return true;
 }
 
@@ -1177,8 +1016,7 @@ inline void UpdateFps(bool enabled) {
     last_applied_fps = 0;
   }
 }
-
-}  // namespace detail
+}
 
 inline bool TryInstallStreamlineHook(reshade::api::device* device) {
   if (detail::shutting_down.load(std::memory_order_relaxed)) return false;
@@ -1234,25 +1072,8 @@ inline void OnPresent(reshade::api::device* device) {
       if (ssr_resolution_state.compare_exchange_weak(
               previous, ((previous + 4) & ~uint64_t{3}) | requested,
               std::memory_order_relaxed)) {
-        ssr_last_logged_dimensions.store(0, std::memory_order_relaxed);
         break;
       }
-    }
-  }
-  if (present_count == 600 && ssr_resolution_hook_installed
-      && !ssr_router_observed.load(std::memory_order_relaxed)) {
-    __try {
-      auto* entry = reinterpret_cast<const uint8_t*>(GetModuleHandleW(L"UnityPlayer.dll")) + 0x4A7D70;
-      char message[224];
-      std::snprintf(
-          message, sizeof(message),
-          "Endfield enhancer: SSR router not entered after 600 presents; installed entry bytes %s (current %02X %02X %02X %02X %02X).",
-          std::memcmp(entry, ssr_installed_entry.data(), ssr_installed_entry.size()) == 0
-              ? "unchanged" : "CHANGED",
-          entry[0], entry[1], entry[2], entry[3], entry[4]);
-      Log(reshade::log::level::warning, message);
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-      Log(reshade::log::level::warning, "Endfield enhancer: SSR entry diagnostic could not read UnityPlayer.");
     }
   }
   const bool render_path_hook_requested =
@@ -1349,5 +1170,4 @@ inline void Shutdown() {
     streamline_create_swapchain = nullptr;
   }
 }
-
-}  // namespace endfield::enhancer
+}

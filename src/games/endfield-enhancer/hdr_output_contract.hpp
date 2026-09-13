@@ -4,7 +4,6 @@
 
 namespace endfield::hdr_output {
 
-// Match the full application color attachment after UI, not DLSS internal reads.
 template <typename Barrier>
 constexpr bool IsOutputBoundary(const Barrier& barrier) {
   return barrier.oldLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
@@ -20,11 +19,10 @@ constexpr bool IsOutputBoundary(const Barrier& barrier) {
              || barrier.subresourceRange.layerCount == VK_REMAINING_ARRAY_LAYERS);
 }
 
-// The float working image is not a WSI image. Never put it in PRESENT_SRC.
 constexpr VkImageLayout WorkingLayout(VkImageLayout layout) {
   return layout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
              ? VK_IMAGE_LAYOUT_GENERAL
              : layout;
 }
 
-}  // namespace endfield::hdr_output
+}

@@ -8,7 +8,6 @@
 
 namespace endfield::enhancer::ssr_depth {
 
-// UnityPlayer 6A85914F, global/CN packaging; caller validates the module identity.
 inline bool ValidateTargets(const uint8_t* base, const IMAGE_NT_HEADERS64* nt) {
   constexpr uint8_t kBuilder[] = {
       0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x18, 0x4C, 0x89, 0x48, 0x20, 0x55,
@@ -93,4 +92,4 @@ inline bool ValidateTargets(const uint8_t* base, const IMAGE_NT_HEADERS64* nt) {
   return true;
 }
 
-}  // namespace endfield::enhancer::ssr_depth
+}

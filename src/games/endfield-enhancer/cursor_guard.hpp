@@ -15,8 +15,7 @@ inline std::atomic<bool> enabled = false;
 inline std::atomic<bool> overriding = false;
 inline std::atomic<HCURSOR> requested_cursor = nullptr;
 inline void (*status_log)(bool) = nullptr;
-// The display count is local to the window's input thread, including Unity's
-// ShowCursor requests. Other Unity threads retain their native display counts.
+
 inline thread_local bool virtual_count_active = false;
 inline thread_local int requested_count = 0;
 inline thread_local int initial_count = 0;
@@ -38,15 +37,14 @@ inline bool OwnsCursor() {
   HWND target = window.load(std::memory_order_acquire);
   if (!enabled.load(std::memory_order_acquire) || !target || !IsWindow(target)) return false;
   if (!GameFocused()) return true;
-  // A remembered WM_SETCURSOR state is insufficient: Unity can recapture the
-  // mouse without sending a client-area cursor message. Check its position now.
+
   POINT cursor = {}, client_origin = {};
   RECT client = {}, outer = {};
   if (!GetCursorPos(&cursor) || !GetClientRect(target, &client)
       || !ClientToScreen(target, &client_origin) || !GetWindowRect(target, &outer)) return false;
   OffsetRect(&client, client_origin.x, client_origin.y);
   return ShouldOverride(true, PtInRect(&outer, cursor) && !PtInRect(&client, cursor),
-      overriding.load(std::memory_order_acquire));
+                        overriding.load(std::memory_order_acquire));
 }
 
 inline HCURSOR WINAPI SetCursorHook(HCURSOR cursor) {
@@ -94,12 +92,16 @@ inline void Begin(HCURSOR cursor) {
 inline void End(bool restore_shape) {
   if (!virtual_count_active) return;
   overriding.store(false, std::memory_order_release);
-  // Apply deferred Unity requests and undo only our own visibility increments.
-  // An absolute reset would discard unhooked Windows/overlay adjustments, whose
-  // later balancing calls could then leave the gameplay cursor hidden.
+
   int adjustment = requested_count - initial_count - visibility_adjustment;
-  while (adjustment > 0) { show_cursor(TRUE); --adjustment; }
-  while (adjustment < 0) { show_cursor(FALSE); ++adjustment; }
+  while (adjustment > 0) {
+    show_cursor(TRUE);
+    --adjustment;
+  }
+  while (adjustment < 0) {
+    show_cursor(FALSE);
+    ++adjustment;
+  }
   visibility_adjustment = 0;
   virtual_count_active = false;
   if (restore_shape) set_cursor(requested_cursor.load(std::memory_order_acquire));
@@ -139,12 +141,15 @@ inline bool MatchesBuild(HMODULE module, DWORD timestamp, DWORD image_size) {
   if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < static_cast<LONG>(sizeof(IMAGE_DOS_HEADER)) || dos->e_lfanew > 4096) return false;
   const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
   return nt->Signature == IMAGE_NT_SIGNATURE && nt->FileHeader.Machine == IMAGE_FILE_MACHINE_AMD64
-      && nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC
-      && nt->FileHeader.TimeDateStamp == timestamp && nt->OptionalHeader.SizeOfImage == image_size;
+         && nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC
+         && nt->FileHeader.TimeDateStamp == timestamp && nt->OptionalHeader.SizeOfImage == image_size;
 }
 
 inline bool Install(HWND target) {
-  if (enabled.load()) { window.store(target); return true; }
+  if (enabled.load()) {
+    window.store(target);
+    return true;
+  }
   HMODULE unity = GetModuleHandleW(L"UnityPlayer.dll");
   if (!MatchesBuild(GetModuleHandleW(nullptr), 0x6A858DB7, 0xCC000)
       || !MatchesBuild(unity, 0x6A85914F, 0x208B000)) return false;
@@ -152,7 +157,10 @@ inline bool Install(HWND target) {
   auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
   const auto imports = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
   if (!imports.VirtualAddress || imports.VirtualAddress + imports.Size > nt->OptionalHeader.SizeOfImage) return false;
-  for (auto& slot : slots) { slot.address = nullptr; slot.original = nullptr; }
+  for (auto& slot : slots) {
+    slot.address = nullptr;
+    slot.original = nullptr;
+  }
   for (DWORD offset = 0; offset + sizeof(IMAGE_IMPORT_DESCRIPTOR) <= imports.Size; offset += sizeof(IMAGE_IMPORT_DESCRIPTOR)) {
     auto* descriptor = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + imports.VirtualAddress + offset);
     if (!descriptor->Name) break;
@@ -175,16 +183,16 @@ inline bool Install(HWND target) {
       }
     }
   }
-  for (const auto& slot : slots) if (!slot.address || !slot.original) return false;
+  for (const auto& slot : slots)
+    if (!slot.address || !slot.original) return false;
   set_cursor = reinterpret_cast<decltype(set_cursor)>(slots[0].original);
   show_cursor = reinterpret_cast<decltype(show_cursor)>(slots[1].original);
   clip_cursor = reinterpret_cast<decltype(clip_cursor)>(slots[2].original);
   set_cursor_pos = reinterpret_cast<decltype(set_cursor_pos)>(slots[3].original);
-  // An engine thread may already have fetched an IAT pointer during teardown.
-  // Keep the tiny forwarding callbacks mapped until process exit even after rollback.
+
   HMODULE self = nullptr;
   if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-          reinterpret_cast<LPCWSTR>(&SetCursorHook), &self)) return false;
+                          reinterpret_cast<LPCWSTR>(&SetCursorHook), &self)) return false;
   size_t applied = 0;
   for (; applied < std::size(slots); ++applied) {
     if (!Replace(slots[applied], true)) {
@@ -206,4 +214,4 @@ inline void Uninstall() {
     if (slot.address && *slot.address == slot.replacement) Replace(slot, false);
   }
 }
-} // namespace endfield::cursor_guard
+}

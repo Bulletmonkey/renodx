@@ -16,10 +16,11 @@ inline constexpr float kMaxModelLimit = 500.f;
 inline bool unavailable = false;
 namespace detail {
 using namespace enhancer::detail;
-struct Distances { float load, unload; };
+struct Distances {
+  float load, unload;
+};
 static_assert(sizeof(Distances) == 8);
 
-// Compare/exchange preserves a newer game-authored value during updates and rollback.
 template <typename T>
 struct Override {
   using Bits = std::conditional_t<sizeof(T) == 1, char, std::conditional_t<sizeof(T) == 8, LONG64, LONG>>;
@@ -27,9 +28,12 @@ struct Override {
   Bits original{}, replacement{};
   bool owned = false;
   Bits Exchange(Bits desired, Bits expected) {
-    if constexpr (sizeof(T) == 1) return _InterlockedCompareExchange8(address, desired, expected);
-    else if constexpr (sizeof(T) == 8) return InterlockedCompareExchange64(address, desired, expected);
-    else return InterlockedCompareExchange(address, desired, expected);
+    if constexpr (sizeof(T) == 1)
+      return _InterlockedCompareExchange8(address, desired, expected);
+    else if constexpr (sizeof(T) == 8)
+      return InterlockedCompareExchange64(address, desired, expected);
+    else
+      return InterlockedCompareExchange(address, desired, expected);
   }
   template <typename Transform>
   bool Update(bool enabled, Transform transform) {
@@ -50,7 +54,7 @@ struct Override {
     }
     const Bits next = std::bit_cast<Bits>(desired);
     if (next == current) return true;
-    if (Exchange(next, current) != current) return true; // A game write won; retry next frame.
+    if (Exchange(next, current) != current) return true;
     if (!owned) original = current;
     replacement = next;
     owned = true;
@@ -60,8 +64,7 @@ struct Override {
 inline Override<Distances> regular, ambient, ambient_cpu, ambient_gpu;
 inline Override<float> ambient_search;
 inline Override<int> limit, ambient_limit;
-inline bool ready = false, attempted = false;
-inline float last_regular = -1.f, last_ambient = -1.f, last_limit = -1.f;
+inline bool ready = false;
 
 inline bool ScaleDistances(Distances* value, float multiplier) {
   if (!std::isfinite(value->load) || !std::isfinite(value->unload)
@@ -90,16 +93,16 @@ inline bool SupportedBuild() {
   if (file == INVALID_HANDLE_VALUE) return false;
   LARGE_INTEGER size{};
   HANDLE mapping = GetFileSizeEx(file, &size) && size.QuadPart > 0 && size.QuadPart <= MAXDWORD
-      ? CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr) : nullptr;
+                       ? CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr)
+                       : nullptr;
   const auto* bytes = mapping ? static_cast<const BYTE*>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0)) : nullptr;
   std::array<BYTE, 32> hash{};
   DWORD length = static_cast<DWORD>(hash.size());
-  const bool hashed = bytes && CryptHashCertificate2(L"SHA256", 0, nullptr, bytes,
-      static_cast<DWORD>(size.QuadPart), hash.data(), &length);
+  const bool hashed = bytes && CryptHashCertificate2(L"SHA256", 0, nullptr, bytes, static_cast<DWORD>(size.QuadPart), hash.data(), &length);
   if (bytes) UnmapViewOfFile(bytes);
   if (mapping) CloseHandle(mapping);
   CloseHandle(file);
-  constexpr std::array<BYTE, 32> expected = {0x59,0x3d,0x0b,0x90,0x5f,0x79,0x3e,0x6b,0xeb,0xd2,0x5e,0xc3,0x43,0x2a,0xf3,0xf7,0xff,0x0f,0x4f,0x0c,0x24,0x39,0x9e,0xc4,0x9c,0x3d,0xdb,0xb1,0x29,0xbd,0xc8,0x6c};
+  constexpr std::array<BYTE, 32> expected = {0x59, 0x3d, 0x0b, 0x90, 0x5f, 0x79, 0x3e, 0x6b, 0xeb, 0xd2, 0x5e, 0xc3, 0x43, 0x2a, 0xf3, 0xf7, 0xff, 0x0f, 0x4f, 0x0c, 0x24, 0x39, 0x9e, 0xc4, 0x9c, 0x3d, 0xdb, 0xb1, 0x29, 0xbd, 0xc8, 0x6c};
   return hashed && length == expected.size() && hash == expected;
 }
 
@@ -125,7 +128,7 @@ inline bool Resolve() {
       || !ResolveExport(module, "il2cpp_class_get_static_field_data", &static_data)
       || !ResolveExport(module, "il2cpp_runtime_class_init", &class_init)) return false;
   constexpr const char* names[] = {"s_visibleModelDistance", "s_visibileAtmosphericModelDistance", "s_maxNPCRenderNum"};
-  constexpr size_t offsets[] = {0, 8, 0x1c}; // Verified consumers and initializer for the exact build above.
+  constexpr size_t offsets[] = {0, 8, 0x1c};
   for (size_t i = 0; i < 3; ++i) {
     void* field = class_get_field_from_name(type, names[i]);
     if (!field || !(field_flags(field) & 0x10) || (field_flags(field) & 0x40)
@@ -168,23 +171,23 @@ inline bool Resolve() {
 }
 inline bool Apply(bool restore = false) {
   const bool regular_ok = regular.Update(!restore && regular_enabled >= 0.5f,
-      [](Distances* value) { return ScaleDistances(value, regular_multiplier); });
+                                         [](Distances* value) { return ScaleDistances(value, regular_multiplier); });
   const bool ambient_ok = ambient.Update(!restore && ambient_enabled >= 0.5f,
-      [](Distances* value) { return ScaleDistances(value, ambient_multiplier); });
+                                         [](Distances* value) { return ScaleDistances(value, ambient_multiplier); });
   const bool limit_ok = limit.Update(!restore && limit_enabled >= 0.5f,
-      [](int* value) { return SetLimit(value, model_limit); });
-  // The promotion budget is the minimum of the shared cap and this separate ceiling.
+                                     [](int* value) { return SetLimit(value, model_limit); });
+
   const bool ambient_limit_ok = ambient_limit.Update(!restore && limit_enabled >= 0.5f,
-      [](int* value) { return SetLimit(value, model_limit); });
+                                                     [](int* value) { return SetLimit(value, model_limit); });
   const bool cpu_ok = ambient_cpu.Update(!restore && ambient_enabled >= 0.5f,
-      [](Distances* value) { return ScaleDistances(value, ambient_multiplier); });
+                                         [](Distances* value) { return ScaleDistances(value, ambient_multiplier); });
   const bool gpu_ok = ambient_gpu.Update(!restore && ambient_enabled >= 0.5f,
-      [](Distances* value) { return ScaleDistances(value, ambient_multiplier); });
+                                         [](Distances* value) { return ScaleDistances(value, ambient_multiplier); });
   const bool search_ok = ambient_search.Update(!restore && ambient_enabled >= 0.5f,
-      [](float* value) { return ScaleRadius(value, ambient_multiplier); });
+                                               [](float* value) { return ScaleRadius(value, ambient_multiplier); });
   return regular_ok && ambient_ok && limit_ok && ambient_limit_ok && cpu_ok && gpu_ok && search_ok;
 }
-} // namespace detail
+}
 
 inline void OnPresent() {
   using namespace detail;
@@ -192,46 +195,38 @@ inline void OnPresent() {
   if (!ready) {
     if (regular_enabled < 0.5f && ambient_enabled < 0.5f && limit_enabled < 0.5f) return;
     if (!enhancer::detail::ResolveApi()) return;
-    if (attempted) return;
-    attempted = true;
-    __try { ready = Resolve(); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { ready = false; }
+    __try {
+      ready = Resolve();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      ready = false;
+    }
     if (!ready) {
       unavailable = true;
       Log(reshade::log::level::warning, "Endfield enhancer: NPC distance controls refused: unsupported build or static field layout.");
       return;
     }
-    Log(reshade::log::level::info, "Endfield enhancer: resolved local NPC model distances, ambient CPU/GPU bands, search radius and model count cap.");
   }
   bool ok = false;
-  __try { ok = Apply(); }
-  __except (EXCEPTION_EXECUTE_HANDLER) { ok = false; }
+  __try {
+    ok = Apply();
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    ok = false;
+  }
   if (!ok) {
-    __try { Apply(true); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    __try {
+      Apply(true);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
     unavailable = true;
     Log(reshade::log::level::warning, "Endfield enhancer: NPC controls disabled after invalid values or memory access; rollback attempted.");
     return;
   }
-  const float r = regular_enabled >= 0.5f ? regular_multiplier : 0.f;
-  const float a = ambient_enabled >= 0.5f ? ambient_multiplier : 0.f;
-  const float n = limit_enabled >= 0.5f ? model_limit : 0.f;
-  if (r != last_regular || a != last_ambient || n != last_limit) {
-    char message[384];
-    const auto regular_values = std::bit_cast<Distances>(regular.Exchange(0, 0));
-    const auto ambient_values = std::bit_cast<Distances>(ambient.Exchange(0, 0));
-    std::snprintf(message, sizeof(message), "Endfield enhancer: NPC settings readback: regular=%.2f/%.2f, ambient=%.2f/%.2f, cap=%ld ambient_cap=%ld (load/unload; field values, not visual validation).",
-        regular_values.load, regular_values.unload, ambient_values.load, ambient_values.unload, limit.Exchange(0, 0), ambient_limit.Exchange(0, 0));
-    Log(reshade::log::level::info, message);
-    const auto cpu_values = std::bit_cast<Distances>(ambient_cpu.Exchange(0, 0));
-    const auto gpu_values = std::bit_cast<Distances>(ambient_gpu.Exchange(0, 0));
-    std::snprintf(message, sizeof(message), "Endfield enhancer: ambient distance readback: CPU=%.2f/%.2f, GPU=%.2f/%.2f, search=%.2f (inner/outer; visual validation pending).",
-        cpu_values.load, cpu_values.unload, gpu_values.load, gpu_values.unload, std::bit_cast<float>(ambient_search.Exchange(0, 0)));
-    Log(reshade::log::level::info, message);
-    last_regular = r; last_ambient = a; last_limit = n;
-  }
 }
 inline void Shutdown() {
   if (!detail::ready) return;
-  __try { detail::Apply(true); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+  __try {
+    detail::Apply(true);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
 }
-} // namespace endfield::npc_distance
+}

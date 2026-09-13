@@ -1,9 +1,3 @@
-"""Embed ReShade's public-domain HDR PNG profile and matching BT.2020 metadata.
-
-Source: external/reshade/deps/stb_image/stb_image_write_hdr_png.h.
-ICC generated with libjxl, courtesy of ledoge, as credited by ReShade.
-Run this script after an intentional update of that source profile.
-"""
 from pathlib import Path
 import hashlib
 import re
@@ -37,4 +31,3 @@ header += f'inline constexpr std::array<uint8_t, {len(metadata)}> kHdrMetadataCh
 header += ''.join('  ' + ','.join(f'0x{v:02x}' for v in metadata[i:i+20]) + ',\n' for i in range(0, len(metadata), 20))
 header += '};\n}\n'
 (root / 'screenshot_profile.hpp').write_text(header)
-print('Embedded ReShade HDR PNG metadata:', len(metadata), 'bytes')

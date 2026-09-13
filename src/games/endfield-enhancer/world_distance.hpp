@@ -1,6 +1,7 @@
 #pragma once
 #include "./npc_distance.hpp"
 #include <TlHelp32.h>
+#include <cstdio>
 
 namespace endfield::world_distance {
 inline float enemies_enabled = 0.f, enemies_multiplier = 2.f;
@@ -24,7 +25,6 @@ inline void* (*pin_target)(uint32_t) = nullptr;
 inline std::array<void*, 3> radius_fields{};
 inline uint32_t manager_handle = 0;
 inline void* manager_object = nullptr;
-inline float last_enemies = -1.f, last_interactive = -1.f;
 struct Binding {
   npc_distance::detail::Override<float> value;
   void* object = nullptr;
@@ -33,7 +33,8 @@ struct Binding {
     value.Update(false, [](float*) { return true; });
     value = {};
     if (handle) unpin(handle);
-    handle = 0; object = nullptr;
+    handle = 0;
+    object = nullptr;
   }
   bool Bind(void* next, size_t offset) {
     if (object == next) return next != nullptr;
@@ -42,7 +43,10 @@ struct Binding {
     handle = pin(next, true);
     if (!handle) return false;
     object = pin_target(handle);
-    if (!object) { Clear(); return false; }
+    if (!object) {
+      Clear();
+      return false;
+    }
     value.address = reinterpret_cast<LONG*>(static_cast<uint8_t*>(object) + offset);
     return true;
   }
@@ -59,8 +63,8 @@ inline bool ApplyEntities(void* manager, float enemy_multiplier, float interacti
   const std::array<float, 2> multipliers{enemy_multiplier, interactive_multiplier};
   if (enemy_multiplier == 0.f && interactive_multiplier == 0.f
       && std::all_of(entities.begin(), entities.end(), [](const auto& bindings) {
-        return std::all_of(bindings.begin(), bindings.end(), [](const Binding& b) { return !b.value.address; });
-      })) return true;
+           return std::all_of(bindings.begin(), bindings.end(), [](const Binding& b) { return !b.value.address; });
+         })) return true;
   bool changed = manager != manager_object;
   if (changed) {
     if (manager_handle) unpin(manager_handle);
@@ -69,53 +73,44 @@ inline bool ApplyEntities(void* manager, float enemy_multiplier, float interacti
     if (!manager_object) return false;
   }
   for (size_t kind = 0; kind < entities.size(); ++kind) {
-  const float multiplier = multipliers[kind];
-  for (size_t i = 0; i < radius_fields.size(); ++i) {
-    auto& binding = entities[kind][i];
-    if (multiplier == 0.f) {
-      changed |= binding.value.owned;
-      binding.Clear();
-      continue;
+    const float multiplier = multipliers[kind];
+    for (size_t i = 0; i < radius_fields.size(); ++i) {
+      auto& binding = entities[kind][i];
+      if (multiplier == 0.f) {
+        changed |= binding.value.owned;
+        binding.Clear();
+        continue;
+      }
+      void* array = nullptr;
+      static_get(radius_fields[i], &array);
+      if (!array || *reinterpret_cast<const uintptr_t*>(static_cast<uint8_t*>(array) + 0x18) != 5) return false;
+      changed |= binding.object != array;
+
+      if (!binding.Bind(array, 0x24 + kind * sizeof(float))) return false;
+      const auto before = binding.value.Exchange(0, 0);
+      if (!binding.value.Update(true, [multiplier, i](float* value) { return Scale(value, multiplier, i != 0); })) return false;
+      changed |= before != binding.value.Exchange(0, 0);
     }
-    void* array = nullptr;
-    static_get(radius_fields[i], &array);
-    if (!array || *reinterpret_cast<const uintptr_t*>(static_cast<uint8_t*>(array) + 0x18) != 5) return false;
-    changed |= binding.object != array;
-    // Exact metadata: Invalid=-1, Character=0, Enemy=1, Interactive=2, Npc=3, AbilityEntity=4.
-    if (!binding.Bind(array, 0x24 + kind * sizeof(float))) return false;
-    const auto before = binding.value.Exchange(0, 0);
-    if (!binding.value.Update(true, [multiplier, i](float* value) { return Scale(value, multiplier, i != 0); })) return false;
-    changed |= before != binding.value.Exchange(0, 0);
-  }
   }
   if (changed) refresh_grid(manager, nullptr);
   return true;
 }
 inline void HookedTick(void* self, float delta, void* method) {
   if (!failed.load(std::memory_order_relaxed)) {
-    const float e = requested_enemies.load(std::memory_order_relaxed);
-    const float interactive = requested_interactive.load(std::memory_order_relaxed);
     bool ok = false;
-    __try { ok = ApplyEntities(self, e, interactive); }
-    __except (EXCEPTION_EXECUTE_HANDLER) { ok = false; }
+    __try {
+      ok = ApplyEntities(self, requested_enemies.load(std::memory_order_relaxed),
+                         requested_interactive.load(std::memory_order_relaxed));
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      ok = false;
+    }
     if (!ok) {
-      __try { ApplyEntities(self, 0.f, 0.f); } __except (EXCEPTION_EXECUTE_HANDLER) {}
+      __try {
+        ApplyEntities(self, 0.f, 0.f);
+      } __except (EXCEPTION_EXECUTE_HANDLER) {
+      }
       failed = true;
       Log(reshade::log::level::warning, "Endfield enhancer: entity distance override refused invalid runtime data; rollback attempted.");
-    } else if (e != last_enemies || interactive != last_interactive) {
-      char message[256];
-      std::snprintf(message, sizeof(message), "Endfield enhancer: enemy load=%.2fx interactive load=%.2fx (0=off); applied on EntityManager.PreTick.", e, interactive);
-      Log(reshade::log::level::info, message);
-      for (size_t kind = 0; kind < entities.size(); ++kind) {
-        if ((kind == 0 ? e : interactive) <= 0.f) continue;
-        std::snprintf(message, sizeof(message), "Endfield enhancer: %s radius readback load=%.1f unload=%.1f grid=%.1f (local data only).",
-            kind == 0 ? "enemy" : "interactive",
-            std::bit_cast<float>(entities[kind][0].value.Exchange(0, 0)),
-            std::sqrt(std::bit_cast<float>(entities[kind][2].value.Exchange(0, 0))),
-            *reinterpret_cast<const float*>(static_cast<const uint8_t*>(self) + 0x104));
-        Log(reshade::log::level::info, message);
-      }
-      last_enemies = e; last_interactive = interactive;
     }
   }
   tick(self, delta, method);
@@ -126,19 +121,31 @@ inline bool UpdateHooks(bool attach) {
   THREADENTRY32 entry{sizeof(entry)};
   bool ok = snapshot != INVALID_HANDLE_VALUE && Thread32First(snapshot, &entry);
   if (ok) do {
-    if (entry.th32OwnerProcessID != GetCurrentProcessId() || entry.th32ThreadID == GetCurrentThreadId()) continue;
-    HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, entry.th32ThreadID);
-    if (!thread) { if (GetLastError() != ERROR_INVALID_PARAMETER) { ok = false; break; } }
-    else threads.push_back(thread);
-  } while (Thread32Next(snapshot, &entry));
+      if (entry.th32OwnerProcessID != GetCurrentProcessId() || entry.th32ThreadID == GetCurrentThreadId()) continue;
+      HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, entry.th32ThreadID);
+      if (!thread) {
+        if (GetLastError() != ERROR_INVALID_PARAMETER) {
+          ok = false;
+          break;
+        }
+      } else
+        threads.push_back(thread);
+    } while (Thread32Next(snapshot, &entry));
   if (snapshot != INVALID_HANDLE_VALUE) CloseHandle(snapshot);
   if (ok && DetourTransactionBegin() == NO_ERROR) {
-    for (HANDLE thread : threads) if (DetourUpdateThread(thread) != NO_ERROR) { ok = false; break; }
+    for (HANDLE thread : threads)
+      if (DetourUpdateThread(thread) != NO_ERROR) {
+        ok = false;
+        break;
+      }
     if (ok) ok = (attach ? DetourAttach(&tick, HookedTick) : DetourDetach(&tick, HookedTick)) == NO_ERROR;
 
-    if (ok) ok = DetourTransactionCommit() == NO_ERROR;
-    else DetourTransactionAbort();
-  } else ok = false;
+    if (ok)
+      ok = DetourTransactionCommit() == NO_ERROR;
+    else
+      DetourTransactionAbort();
+  } else
+    ok = false;
   for (HANDLE thread : threads) CloseHandle(thread);
   return ok;
 }
@@ -184,15 +191,15 @@ inline bool Resolve() {
   resolve_stage = "class initialization";
   class_init(manager);
   const auto* base = reinterpret_cast<const uint8_t*>(module);
-  constexpr uint8_t tick_prefix[] = {0x40,0x53,0x48,0x83,0xec,0x30,0x48,0x8b,0xd9,0x0f,0x29,0x74,0x24,0x20,0x48,0x8b,0x0d,0xcb,0x0a,0x42,0x09,0x0f,0x28,0xf1,0x83,0xb9,0xe0,0x00,0x00,0x00,0x00,0x74,0x7c};
-  constexpr uint8_t grid_prefix[] = {0x40,0x57,0x48,0x83,0xec,0x30,0x80,0x3d,0x90,0x8a,0xde,0x09,0x00,0x48,0x8b,0xf9,0x75,0x13,0x48,0x8d,0x0d,0xdf,0x97,0xf8,0x08,0xe8,0xf2,0x56,0xf8,0xfb,0xc6,0x05,0x78,0x8a,0xde,0x09,0x01};
+  constexpr uint8_t tick_prefix[] = {0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0xd9, 0x0f, 0x29, 0x74, 0x24, 0x20, 0x48, 0x8b, 0x0d, 0xcb, 0x0a, 0x42, 0x09, 0x0f, 0x28, 0xf1, 0x83, 0xb9, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x74, 0x7c};
+  constexpr uint8_t grid_prefix[] = {0x40, 0x57, 0x48, 0x83, 0xec, 0x30, 0x80, 0x3d, 0x90, 0x8a, 0xde, 0x09, 0x00, 0x48, 0x8b, 0xf9, 0x75, 0x13, 0x48, 0x8d, 0x0d, 0xdf, 0x97, 0xf8, 0x08, 0xe8, 0xf2, 0x56, 0xf8, 0xfb, 0xc6, 0x05, 0x78, 0x8a, 0xde, 0x09, 0x01};
   if (std::memcmp(base + 0x3BD2AB0, tick_prefix, sizeof(tick_prefix))
       || std::memcmp(base + 0x40BBB50, grid_prefix, sizeof(grid_prefix))) return false;
   tick = reinterpret_cast<Tick>(const_cast<uint8_t*>(base + 0x3BD2AB0));
   refresh_grid = reinterpret_cast<RefreshGrid>(const_cast<uint8_t*>(base + 0x40BBB50));
   return true;
 }
-} // namespace detail
+}
 inline void OnPresent() {
   using namespace detail;
   if (failed) unavailable = true;
@@ -203,8 +210,15 @@ inline void OnPresent() {
     if (enemies_enabled < 0.5f && interactive_enabled < 0.5f) return;
     if (!enhancer::detail::ResolveApi()) return;
     bool ok = false;
-    __try { ok = Resolve(); } __except (EXCEPTION_EXECUTE_HANDLER) { ok = false; }
-    if (ok) { resolve_stage = "hook transaction"; ok = UpdateHooks(true); }
+    __try {
+      ok = Resolve();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      ok = false;
+    }
+    if (ok) {
+      resolve_stage = "hook transaction";
+      ok = UpdateHooks(true);
+    }
     if (!ok) {
       unavailable = true;
       char message[256];
@@ -219,7 +233,8 @@ inline void OnPresent() {
 inline void Shutdown() {
   using namespace detail;
   if (!installed) return;
-  requested_enemies = 0; requested_interactive = 0;
+  requested_enemies = 0;
+  requested_interactive = 0;
   if (!UpdateHooks(false)) {
     Log(reshade::log::level::error, "Endfield enhancer: entity distance hook removal failed.");
     return;
@@ -227,8 +242,10 @@ inline void Shutdown() {
   __try {
     if (manager_object) ApplyEntities(manager_object, 0.f, 0.f);
     if (manager_handle) unpin(manager_handle);
-    manager_handle = 0; manager_object = nullptr;
-  } __except (EXCEPTION_EXECUTE_HANDLER) {}
+    manager_handle = 0;
+    manager_object = nullptr;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
   installed = false;
 }
-} // namespace endfield::world_distance
+}

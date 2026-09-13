@@ -11,33 +11,30 @@ inline std::string message;
 inline Setting* message_owner = nullptr;
 inline constexpr size_t global_shortcut_count = 4;
 inline constexpr const char* keys[] = {"ShortcutFreeCamera", "ShortcutHideUI", "ShortcutFirstPerson", "ShortcutFullscreen",
-    "ShortcutFreeExit", "ShortcutFreeForward", "ShortcutFreeBackward", "ShortcutFreeLeft", "ShortcutFreeRight",
-    "ShortcutFreeDown", "ShortcutFreeUp", "ShortcutFreeBoost"};
+                                       "ShortcutFreeExit", "ShortcutFreeForward", "ShortcutFreeBackward", "ShortcutFreeLeft", "ShortcutFreeRight",
+                                       "ShortcutFreeDown", "ShortcutFreeUp", "ShortcutFreeBoost"};
 
 inline Setting* Create(const char* key, float default_key, const char* label, const char* section) {
-  return new Setting{.key = key, .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-      .default_value = default_key, .label = label, .section = section, .max = 2047.f};
+  return new Setting{.key = key, .value_type = renodx::utils::settings::SettingValueType::INTEGER, .default_value = default_key, .label = label, .section = section, .max = 2047.f};
 }
 
 inline bool Conflicts(const Setting* setting, const Setting* other, int binding) {
   if (!binding || !other || other == setting || other->value_as_int != binding) return false;
   if (setting->section == other->section) return true;
-  // Only freecam's held controls and exit are scoped. Its toggle is global.
+
   return !(setting->section == "Freecam Shortcuts" && setting->key != "ShortcutFreeCamera")
-      && !(other->section == "Freecam Shortcuts" && other->key != "ShortcutFreeCamera");
+         && !(other->section == "Freecam Shortcuts" && other->key != "ShortcutFreeCamera");
 }
 
 inline bool Matches(reshade::api::effect_runtime* runtime, int binding, int modifiers, bool pressed) {
   const int key = binding & 255;
   if (!key) return false;
-  // Held movement accepts extra modifiers so Shift + W still moves forward.
-  // A modifier used as the primary key must not require itself as a prefix.
+
   if (key == VK_SHIFT || key == VK_LSHIFT || key == VK_RSHIFT) modifiers &= ~512;
   if (key == VK_CONTROL || key == VK_LCONTROL || key == VK_RCONTROL) modifiers &= ~256;
   if (key == VK_MENU || key == VK_LMENU || key == VK_RMENU) modifiers &= ~1024;
   if (pressed ? modifiers != (binding & ~255) : (modifiers & (binding & ~255)) != (binding & ~255)) return false;
-  // Virtual-key queries also cover mouse buttons, avoiding button-index ABI
-  // differences between ReShade versions and their documentation.
+
   return pressed ? runtime->is_key_pressed(key) : runtime->is_key_down(key);
 }
 
@@ -48,9 +45,9 @@ inline std::string Name(int binding) {
   if (binding & 512) result += "Shift + ";
   if (binding & 1024) result += "Alt + ";
   switch (binding & 255) {
-    case VK_LBUTTON: return result + "Left Mouse";
-    case VK_RBUTTON: return result + "Right Mouse";
-    case VK_MBUTTON: return result + "Middle Mouse";
+    case VK_LBUTTON:  return result + "Left Mouse";
+    case VK_RBUTTON:  return result + "Right Mouse";
+    case VK_MBUTTON:  return result + "Middle Mouse";
     case VK_XBUTTON1: return result + "Mouse 4";
     case VK_XBUTTON2: return result + "Mouse 5";
   }
@@ -58,8 +55,10 @@ inline std::string Name(int binding) {
   UINT scan = MapVirtualKeyA(binding & 255, MAPVK_VK_TO_VSC);
   if ((binding & 255) >= VK_PRIOR && (binding & 255) <= VK_DOWN) scan |= 0x100;
   if ((binding & 255) == VK_INSERT || (binding & 255) == VK_DELETE) scan |= 0x100;
-  if (GetKeyNameTextA(static_cast<LONG>(scan << 16), name, sizeof(name))) result += name;
-  else result += "Key " + std::to_string(binding & 255);
+  if (GetKeyNameTextA(static_cast<LONG>(scan << 16), name, sizeof(name)))
+    result += name;
+  else
+    result += "Key " + std::to_string(binding & 255);
   return result;
 }
 
@@ -82,7 +81,6 @@ inline bool Draw(Setting* setting) {
   }
   ImGui::SameLine();
   if (ImGui::SmallButton("Reset")) {
-    // Do not silently assign a default already used by another action.
     bool conflict = false;
     for (const char* key : keys) {
       auto* other = renodx::utils::settings::FindSetting(key);
@@ -91,7 +89,12 @@ inline bool Draw(Setting* setting) {
     if (conflict) {
       message_owner = setting;
       message = "That shortcut is already assigned. Clear its other binding first.";
-    } else { setting->Set(setting->default_value)->Write(); capturing = nullptr; message.clear(); changed = true; }
+    } else {
+      setting->Set(setting->default_value)->Write();
+      capturing = nullptr;
+      message.clear();
+      changed = true;
+    }
   }
   if (capturing == setting) {
     capture_frame = ImGui::GetFrameCount();
@@ -103,7 +106,6 @@ inline bool Draw(Setting* setting) {
   return changed;
 }
 
-// Keep the Setting value, bound feature value and callbacks synchronized.
 inline void Set(Setting* setting, float value) {
   if (!setting || (setting->is_enabled && !setting->is_enabled())) return;
   const float previous = setting->GetValue();
@@ -124,8 +126,8 @@ inline void OnFrame(reshade::api::effect_runtime* runtime) {
     message.clear();
   }
   int modifiers = (runtime->is_key_down(VK_CONTROL) ? 256 : 0)
-                | (runtime->is_key_down(VK_SHIFT) ? 512 : 0)
-                | (runtime->is_key_down(VK_MENU) ? 1024 : 0);
+                  | (runtime->is_key_down(VK_SHIFT) ? 512 : 0)
+                  | (runtime->is_key_down(VK_MENU) ? 1024 : 0);
   const bool was_capturing = capturing != nullptr;
   if (capturing && ImGui::GetFrameCount() > capture_started) {
     runtime->block_input_next_frame();
@@ -133,7 +135,11 @@ inline void OnFrame(reshade::api::effect_runtime* runtime) {
       if (key == VK_CANCEL || (key >= VK_LSHIFT && key <= VK_RMENU)) continue;
       const bool modifier = key == VK_SHIFT || key == VK_CONTROL || key == VK_MENU;
       if (modifier ? !runtime->is_key_released(key) : !Matches(runtime, key | modifiers, modifiers, true)) continue;
-      if (key == VK_ESCAPE) { capturing = nullptr; message.clear(); break; }
+      if (key == VK_ESCAPE) {
+        capturing = nullptr;
+        message.clear();
+        break;
+      }
       if (key == VK_LWIN || key == VK_RWIN) continue;
       const int binding = key == VK_DELETE ? 0 : key | modifiers;
       bool conflict = false;
@@ -144,8 +150,7 @@ inline void OnFrame(reshade::api::effect_runtime* runtime) {
       if (conflict) {
         message_owner = capturing;
         message = "That shortcut is already assigned. Choose another key combination.";
-      }
-      else {
+      } else {
         Set(capturing, static_cast<float>(binding));
         capturing = nullptr;
         message.clear();
@@ -190,11 +195,11 @@ inline void OnFrame(reshade::api::effect_runtime* runtime) {
   }
   camera::detail::freecam::Controls controls;
   bool* actions[] = {&controls.exit, &controls.forward, &controls.backward, &controls.left, &controls.right,
-      &controls.down, &controls.up, &controls.boost};
+                     &controls.down, &controls.up, &controls.boost};
   for (size_t i = 0; i < std::size(actions); ++i) {
     auto* binding = FindSetting(keys[i + global_shortcut_count]);
     *actions[i] = binding && Matches(runtime, binding->value_as_int, modifiers, i == 0);
   }
   camera::detail::freecam::OnFrame(runtime, controls, !was_capturing);
 }
-} // namespace endfield::shortcuts
+}

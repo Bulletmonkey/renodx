@@ -8,8 +8,6 @@
 
 namespace endfield::hdr_output {
 
-// ReShade's generic descriptor event omits dynamic offsets. Keep native bind
-// batches intact: splitting one would require per-set dynamic descriptor counts.
 struct GraphicsBindings {
   struct Batch {
     uint32_t first = 0;
@@ -34,14 +32,19 @@ struct GraphicsBindings {
       return;
     }
     for (uint32_t i = 0; i < count; ++i) {
-      if (sets[i] == VK_NULL_HANDLE) { valid = false; return; }
+      if (sets[i] == VK_NULL_HANDLE) {
+        valid = false;
+        return;
+      }
     }
-    // A fully overwritten batch is unnecessary. Keep partial overlaps in order
-    // so their dynamic offsets are replayed with their original native ranges.
+
     std::erase_if(batches, [first, count](const Batch& batch) {
       return first <= batch.first && first + count >= batch.first + batch.sets.size();
     });
-    if (batches.size() >= 32) { valid = false; return; }
+    if (batches.size() >= 32) {
+      valid = false;
+      return;
+    }
     auto& batch = batches.emplace_back();
     batch.first = first;
     batch.sets.assign(sets, sets + count);
@@ -69,4 +72,4 @@ struct GraphicsBindings {
   }
 };
 
-}  // namespace endfield::hdr_output
+}

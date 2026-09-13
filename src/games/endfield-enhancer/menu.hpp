@@ -1,14 +1,13 @@
 #pragma once
 
+#include <algorithm>
 #include <cctype>
-#include <string_view>
+#include <string>
 
 #include "../../utils/settings.hpp"
 
 namespace endfield::menu {
 
-// Keep the registered Setting objects as the sole source of values, callbacks,
-// availability and persistence. Only their presentation is game-specific.
 inline bool DrawSetting(renodx::utils::settings::Setting* setting) {
   if (setting->key.starts_with("Shortcut")) return shortcuts::Draw(setting);
   using renodx::utils::settings::SettingValueType;
@@ -32,7 +31,6 @@ inline bool DrawSetting(renodx::utils::settings::Setting* setting) {
     ImGui::TableNextColumn();
     ImGui::SetNextItemWidth(-1.f);
     if (!setting->labels.empty()) {
-      // Use direct choices when they fit; preserve readable labels on narrow overlays.
       float required_width = 0.f;
       for (const auto& label : setting->labels) {
         required_width = std::max(required_width, ImGui::CalcTextSize(label.c_str()).x + ImGui::GetStyle().FramePadding.x * 2.f);
@@ -46,7 +44,7 @@ inline bool DrawSetting(renodx::utils::settings::Setting* setting) {
           if (i != 0) ImGui::SameLine();
           ImGui::PushID(i);
           ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(
-              setting->value_as_int == i ? ImGuiCol_SliderGrabActive : ImGuiCol_FrameBg));
+                                                     setting->value_as_int == i ? ImGuiCol_SliderGrabActive : ImGuiCol_FrameBg));
           if (ImGui::Button(setting->labels[i].c_str(), ImVec2(button_width, 0.f))) {
             changed = setting->value_as_int != i;
             setting->Set(static_cast<float>(i));
@@ -67,7 +65,7 @@ inline bool DrawSetting(renodx::utils::settings::Setting* setting) {
       changed = ImGui::SliderInt("##value", &setting->value_as_int, static_cast<int>(setting->min), static_cast<int>(setting->GetMax()), setting->format.c_str(), ImGuiSliderFlags_AlwaysClamp);
     } else {
       changed = ImGui::SliderFloat("##value", &setting->value, setting->min, setting->max, setting->format.c_str(),
-                                  ImGuiSliderFlags_AlwaysClamp | (setting->is_logarithmic ? ImGuiSliderFlags_Logarithmic : 0));
+                                   ImGuiSliderFlags_AlwaysClamp | (setting->is_logarithmic ? ImGuiSliderFlags_Logarithmic : 0));
     }
     if (changed) setting->on_change();
     ImGui::TableNextColumn();
@@ -101,50 +99,55 @@ inline bool DrawSetting(renodx::utils::settings::Setting* setting) {
 inline void Draw(const renodx::utils::settings::Settings& settings) {
   static char search[128] = {};
   const auto matches = [&](const std::string& text) {
-    return std::search(text.begin(), text.end(), std::begin(search), std::begin(search) + std::char_traits<char>::length(search),
-                       [](unsigned char a, unsigned char b) { return std::tolower(a) == std::tolower(b); }) != text.end() || search[0] == 0;
+    return search[0] == 0 || std::search(text.begin(), text.end(), std::begin(search), std::begin(search) + std::char_traits<char>::length(search), [](unsigned char a, unsigned char b) { return std::tolower(a) == std::tolower(b); }) != text.end();
   };
   static int page = 0;
-  constexpr const char* pages[] = {"FPS Limiter", "Graphics", "Entities", "Screenshots", "Patches", "System", "Camera", "UI", "Shortcuts"};
+  constexpr const char* pages[] = {"FPS Limiter", "Graphics", "Entities", "Screenshots", "Patches", "Camera", "UI", "Shortcuts", "System"};
   constexpr const char* descriptions[] = {
-      "FPS unlock and limits for gameplay, frame generation and background use.",
-      "Rendering resolution, geometry detail and depth of field.",
-      "Entity population, draw distances, visibility and loading.",
-      "HDR photo output and photo frame removal.",
-      "HDR frame-generation compatibility and uncensor options.",
-      "Runtime information and addon credits.",
-      "Camera position, rotation, zoom range and body-visible first person.",
-      "Hide game UI, UID, latency bar and ping during gameplay, menus and conversations.",
-      "Click a shortcut button to rebind it. Optional Ctrl, Shift and Alt combinations are supported. Shortcuts pause while using the overlay."};
+      "Unlock FPS and adjust frame limits.",
+      "Adjust rendering quality.",
+      "Adjust entity population and visibility.",
+      "Configure photo output.",
+      "HDR compatibility and uncensor options.",
+      "Adjust camera and first person settings.",
+      "Hide game UI elements.",
+      "Customize keyboard shortcuts.",
+      "Runtime information and addon credits."};
   constexpr struct {
     const char* name;
     int page;
     bool advanced;
   } sections[] = {
-      {"Camera Controls", 6, false},
-      {"Freecam Shortcuts", 8, false},
-      {"UI Shortcuts", 8, false},
-      {"First Person Shortcuts", 8, false},
-      {"Window Shortcuts", 8, false},
-      {"Camera Position", 6, false},
-      {"Camera Rotation", 6, false},
-      {"First Person", 6, false},
+      {"Camera Controls", 5, false},
+      {"Freecam Shortcuts", 7, false},
+      {"UI Shortcuts", 7, false},
+      {"First Person Shortcuts", 7, false},
+      {"Window Shortcuts", 7, false},
+      {"Camera Position", 5, false},
+      {"Camera Rotation", 5, false},
+      {"First Person", 5, false},
       {"FPS Limit", 0, false},
-      {"Ambient Occlusion", 1, false}, {"Screen Space Reflections", 1, false}, {"Geometry", 1, false},
+      {"Ambient Occlusion", 1, false},
+      {"Screen Space Reflections", 1, false},
+      {"Geometry", 1, false},
       {"Depth of Field", 1, false},
-      {"Entity Population & Distance", 2, false}, {"NPC Culling", 2, true},
-      {"NPC Loading", 2, true}, {"NPC Unloading (Experimental)", 2, true},
+      {"Entity Population & Distance", 2, false},
+      {"NPC Culling", 2, true},
+      {"NPC Loading", 2, true},
+      {"NPC Unloading (Experimental)", 2, true},
       {"Screenshots", 3, false},
-      {"UI Visibility", 7, false},
-      {"DLSS-G HDR Patch", 4, false}, {"Uncensor", 4, false},
-      {"Runtime Information", 5, false}, {"About", 5, true}};
+      {"UI Visibility", 6, false},
+      {"DLSS-G HDR Patch", 4, false},
+      {"Uncensor", 4, false},
+      {"Runtime Information", 8, false},
+      {"About", 8, true}};
 
   ImGui::PushID("EndfieldEnhancerMenu");
   ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.f);
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.f, 4.f));
   ImGui::SetNextItemWidth(-1.f);
   ImGui::InputTextWithHint("##search", "Search all settings...", search, IM_ARRAYSIZE(search));
-  if ((search[0] != 0)) {
+  if (search[0] != 0) {
     if (ImGui::SmallButton("Clear search")) search[0] = 0;
   } else {
     if (ImGui::BeginTabBar("Pages", ImGuiTabBarFlags_FittingPolicyScroll)) {
@@ -162,16 +165,19 @@ inline void Draw(const renodx::utils::settings::Settings& settings) {
   bool changed = false;
   bool found = false;
   for (const auto& section : sections) {
-    if (!(search[0] != 0) && section.page != page) continue;
+    if (search[0] == 0 && section.page != page) continue;
     bool has_match = false;
     for (auto* setting : settings) {
       if (setting->section != section.name || (setting->is_visible && !setting->is_visible())) continue;
-      if (matches(setting->label + " " + setting->section + " " + setting->tooltip)) has_match = true;
+      if (matches(setting->label + " " + setting->section + " " + setting->tooltip)) {
+        has_match = true;
+        break;
+      }
     }
     if (!has_match) continue;
     found = true;
-    ImGui::PushID((search[0] != 0) ? "search" : "page");
-    if ((search[0] != 0)) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    ImGui::PushID(search[0] != 0 ? "search" : "page");
+    if (search[0] != 0) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
     if (ImGui::CollapsingHeader(section.name, section.advanced ? ImGuiTreeNodeFlags_None : ImGuiTreeNodeFlags_DefaultOpen)) {
       for (auto* setting : settings) {
         if (setting->section != section.name || (setting->is_visible && !setting->is_visible())) continue;
@@ -191,4 +197,4 @@ inline void Draw(const renodx::utils::settings::Settings& settings) {
   ImGui::PopID();
 }
 
-}  // namespace endfield::menu
+}

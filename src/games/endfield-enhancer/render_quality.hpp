@@ -7,9 +7,6 @@
 #include <Windows.h>
 
 namespace endfield::enhancer {
-
-// Overrides apply only while the native render graph builds its passes. Keep
-// the engine's settings intact between calls, including across camera changes.
 struct RenderQualityOverrides {
   struct Write {
     void* address = nullptr;
@@ -17,8 +14,7 @@ struct RenderQualityOverrides {
     uint64_t replacement = 0;
     size_t size = 0;
   };
-  // Three DoF quality/resolution writes and fifteen manual-focus writes,
-  // including the current camera, debug flag and scale.
+
   std::array<Write, 18> writes = {};
   size_t count = 0;
 
@@ -41,7 +37,7 @@ struct RenderQualityOverrides {
     bool restored = true;
     while (count != 0) {
       auto& write = writes[--count];
-      // Do not overwrite a change made by the engine or another addon.
+
       __try {
         if (std::memcmp(write.address, &write.replacement, write.size) == 0) {
           std::memcpy(write.address, &write.original, write.size);
@@ -53,5 +49,4 @@ struct RenderQualityOverrides {
     return restored;
   }
 };
-
-}  // namespace endfield::enhancer
+}

@@ -1,11 +1,11 @@
 #pragma once
 
-namespace endfield::lod {
+#include "./enhancer.hpp"
 
+namespace endfield::lod {
 inline float force_highest_geometry_lod = 0.f;
 
 namespace detail {
-
 using namespace endfield::enhancer::detail;
 
 using FieldStaticGetValue = void (*)(void*, void*);
@@ -19,7 +19,6 @@ inline Il2CppMethod set_maximum_lod_level = nullptr;
 inline void* current_pipeline_field = nullptr;
 
 inline bool api_ready = false;
-inline bool api_logged = false;
 inline bool force_lod_dirty = false;
 inline bool maximum_lod_captured = false;
 inline bool force_lod0_applied = false;
@@ -27,13 +26,10 @@ inline int original_maximum_lod = 0;
 inline float observed_force_highest_geometry_lod = 0.f;
 inline void* pipeline_object = nullptr;
 
-inline bool InvokeVoid(
-    Il2CppMethod method,
-    void* object = nullptr,
-    void** parameters = nullptr) {
+inline bool InvokeVoid(Il2CppMethod method, void* object) {
   if (method == nullptr) return false;
   void* exception = nullptr;
-  runtime_invoke(method, object, parameters, &exception);
+  runtime_invoke(method, object, nullptr, &exception);
   return exception == nullptr;
 }
 
@@ -70,20 +66,7 @@ inline bool ResolveApi() {
   api_ready = get_maximum_lod_level != nullptr
               && set_maximum_lod_level != nullptr
               && current_pipeline_field != nullptr;
-  if (api_ready && !api_logged) {
-    Log(
-        reshade::log::level::info,
-        "Endfield enhancer: resolved Force Highest Geometry LOD from IL2CPP metadata.");
-    api_logged = true;
-  }
   return api_ready && AttachThread();
-}
-
-inline void* GetPipeline() {
-  if (current_pipeline_field == nullptr) return nullptr;
-  void* pipeline = nullptr;
-  field_static_get_value(current_pipeline_field, &pipeline);
-  return pipeline;
 }
 
 inline bool ApplyForceHighestGeometryLod() {
@@ -100,7 +83,9 @@ inline bool ApplyForceHighestGeometryLod() {
     return false;
   }
 
-  void* current_pipeline = GetPipeline();
+  if (current_pipeline_field == nullptr) return false;
+  void* current_pipeline = nullptr;
+  field_static_get_value(current_pipeline_field, &current_pipeline);
   if (current_pipeline == nullptr) return false;
   if (pipeline_object != current_pipeline) {
     pipeline_object = current_pipeline;
@@ -131,8 +116,7 @@ inline bool ApplyForceHighestGeometryLod() {
   if (!enabled) maximum_lod_captured = false;
   return true;
 }
-
-}  // namespace detail
+}
 
 inline void OnRendererReset() {
   using namespace detail;
@@ -159,5 +143,4 @@ inline void Shutdown() {
   force_highest_geometry_lod = 0.f;
   if (api_ready && AttachThread()) ApplyForceHighestGeometryLod();
 }
-
-}  // namespace endfield::lod
+}

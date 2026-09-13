@@ -1,6 +1,5 @@
 #pragma once
 
-// Included inside camera::detail. Read-only eligibility; no dialogue state writes.
 namespace dialogue {
 inline void* controller_class = nullptr;
 inline void* manager_field = nullptr;
@@ -12,7 +11,6 @@ inline Il2CppMethod playing, preparing, timeline, interact_controller;
 inline Il2CppMethod interact_npc;
 inline Il2CppMethod npc_model, npc_model_go;
 inline Il2CppMethod (*virtual_method)(void*, Il2CppMethod) = nullptr;
-inline const char* focus_result = nullptr;
 inline Il2CppMethod camera_param, horizontal, vertical, set_horizontal, set_vertical;
 inline Il2CppMethod camera_config, evaluate_curve;
 inline void* pitch_to_vertical = nullptr;
@@ -36,7 +34,6 @@ inline bool was_conversation = false;
 inline bool available = false;
 inline bool have_view = false;
 inline Quat saved_view{0, 0, 0, 1};
-inline const char* last_result = nullptr;
 inline uint32_t focus_npc_root = 0, focus_model_root = 0, focus_head_root = 0;
 inline bool focus_started = false;
 inline double focus_start = 0;
@@ -47,7 +44,6 @@ inline void ResetFocus() {
     if (root) gc_free(root);
   focus_head_root = focus_model_root = focus_npc_root = 0;
   focus_started = false;
-  focus_result = nullptr;
 }
 
 inline Quat Focus(void* controller, Vec3 camera_position, double now) {
@@ -59,8 +55,7 @@ inline Quat Focus(void* controller, Vec3 camera_position, double now) {
     }
   }
   void* npc = focus_npc_root ? gc_target(focus_npc_root) : nullptr;
-  // Crowd NPCs implement IModelComponent through their NPC component rather
-  // than Entity.modelCom. Dispatch GetModelGo on that concrete implementation.
+
   void* model = npc ? Invoke(npc_model, npc) : nullptr;
   void* go = model ? Invoke(virtual_method(model, npc_model_go), model) : nullptr;
   if (!focus_model_root || gc_target(focus_model_root) != go) {
@@ -75,24 +70,16 @@ inline Quat Focus(void* controller, Vec3 camera_position, double now) {
   Quat desired{};
   if (head) position_injected(head, &target);
   const bool valid = head && Finite(camera_position) && Finite(target)
-      && FacingRotation(target + camera_position * -1.f, {0, 1, 0}, &desired);
-  const char* result = !npc ? "interaction NPC unavailable" : !model ? "NPC model component unavailable"
-      : !go ? "NPC model object unavailable" : !head ? "NPC head unavailable"
-      : !valid ? "NPC head direction invalid" : "blending/tracking NPC head";
-  if (focus_result != result) {
-    focus_result = result;
-    Log(reshade::log::level::info, (std::string("Endfield enhancer: conversation focus: ") + result).c_str());
-  }
+                     && FacingRotation(target + camera_position * -1.f, {0, 1, 0}, &desired);
   if (!valid)
     return focus_started ? focus_view : saved_view;
-  // Retain the initiating NPC, independently of which actor is speaking.
-  // Start only once its head exists; model loading must not consume the blend.
+
   if (!focus_started) {
     focus_started = true;
     focus_start = now;
   }
   const float t = static_cast<float>(std::clamp((now - focus_start) / .65, 0., 1.));
-  focus_view = BlendRotation(saved_view, desired, t*t*(3.f-2.f*t));
+  focus_view = BlendRotation(saved_view, desired, t * t * (3.f - 2.f * t));
   return focus_view;
 }
 
@@ -101,8 +88,6 @@ inline void* Character(void* controller) {
     void* manager = nullptr;
     static_get(manager_field, &manager);
     if (manager && Invoke(interact_controller, manager) == controller) {
-      // The game's dialogue positioning uses m_mainEntity, which can be a
-      // temporary Endministrator actor instead of the gameplay character.
       void* character = nullptr;
       field_get(manager, main_entity_field, &character);
       if (character) return character;
@@ -122,14 +107,23 @@ inline void CaptureAngles(void* controller) {
   void* param = Invoke(camera_param, controller);
   void* h = param ? Invoke(horizontal, param) : nullptr;
   void* v = param ? Invoke(vertical, param) : nullptr;
-  if (!h || !v) { ResetView(); return; }
+  if (!h || !v) {
+    ResetView();
+    return;
+  }
   const float x = *static_cast<float*>(object_unbox(h)), y = *static_cast<float*>(object_unbox(v));
-  if (!std::isfinite(x) || !std::isfinite(y)) { ResetView(); return; }
+  if (!std::isfinite(x) || !std::isfinite(y)) {
+    ResetView();
+    return;
+  }
   if (!param_root || gc_target(param_root) != param) {
     if (param_root) gc_free(param_root);
     param_root = gc_new(param, false);
   }
-  if (!param_root) { ResetView(); return; }
+  if (!param_root) {
+    ResetView();
+    return;
+  }
   saved_horizontal = x;
   saved_vertical = y;
 }
@@ -138,12 +132,21 @@ inline bool RestoreAngles(void* controller, float pitch_offset = 0.f, float look
   if (!was_conversation) return false;
   was_conversation = false;
   void* param = Invoke(camera_param, controller);
-  if (!have_view || !param_root || !param || gc_target(param_root) != param) { ResetView(); return false; }
+  if (!have_view || !param_root || !param || gc_target(param_root) != param) {
+    ResetView();
+    return false;
+  }
   void* old_h = Invoke(horizontal, param);
   void* old_v = Invoke(vertical, param);
-  if (!old_h || !old_v) { ResetView(); return false; }
+  if (!old_h || !old_v) {
+    ResetView();
+    return false;
+  }
   float original_h = *static_cast<float*>(object_unbox(old_h)), original_v = *static_cast<float*>(object_unbox(old_v));
-  if (!std::isfinite(original_h) || !std::isfinite(original_v)) { ResetView(); return false; }
+  if (!std::isfinite(original_h) || !std::isfinite(original_v)) {
+    ResetView();
+    return false;
+  }
   if (focus_started) {
     const Vec3 before = Rotate(saved_view, {0, 0, 1}), after = Rotate(focus_view, {0, 0, 1});
     float pitch = -std::atan2(after.y, std::hypot(after.x, after.z)) * 57.295779513f - pitch_offset;
@@ -153,14 +156,16 @@ inline bool RestoreAngles(void* controller, float pitch_offset = 0.f, float look
     if (config) field_get(config, pitch_to_vertical, &curve);
     void* args[]{&pitch};
     void* value = curve ? Invoke(evaluate_curve, curve, args) : nullptr;
-    if (!value || !std::isfinite(*static_cast<float*>(object_unbox(value)))) { ResetView(); return false; }
+    if (!value || !std::isfinite(*static_cast<float*>(object_unbox(value)))) {
+      ResetView();
+      return false;
+    }
     saved_horizontal += std::remainder((std::atan2(after.x, after.z) - std::atan2(before.x, before.z)) * 57.295779513f, 360.f);
     saved_vertical = *static_cast<float*>(object_unbox(value));
     saved_view = focus_view;
   }
   ResetFocus();
-  // Use the game's immediate angle setters: they update both target/current
-  // values and stop the angle tween without touching zoom or gameplay facing.
+
   bool tween = false;
   void* args_h[]{&saved_horizontal, &tween};
   void* args_v[]{&saved_vertical, &tween};
@@ -180,34 +185,25 @@ inline bool RestoreAngles(void* controller, float pitch_offset = 0.f, float look
   return true;
 }
 
-inline bool Report(const char* reason, bool eligible = false) {
-  if (last_result != reason) {
-    last_result = reason;
-    Log(reshade::log::level::info, (std::string("Endfield enhancer: first-person conversation: ") + reason).c_str());
-  }
-  return eligible;
-}
-
-inline bool CompleteGameplayBlend(void* blend, void* camera) {
-  if (!blend || object_class(blend) != blend_class) return false;
+inline void CompleteGameplayBlend(void* blend, void* camera) {
+  if (!blend || object_class(blend) != blend_class) return;
   void* target = nullptr;
   float elapsed = 0.f, duration = 0.f;
   field_get(blend, blend_target, &target);
   field_get(blend, blend_time, &elapsed);
   field_get(blend, blend_duration, &duration);
-  if (target != camera || !std::isfinite(elapsed) || !std::isfinite(duration) || duration < 0.f) return false;
+  if (target != camera || !std::isfinite(elapsed) || !std::isfinite(duration) || duration < 0.f) return;
   field_set(blend, blend_time, &duration);
-  return true;
 }
 
 inline bool HoldExitView(void* controller, void* brain, float pitch_offset = 0.f, float look_up = 1.f, float look_down = 1.f) {
   const bool exiting = was_conversation;
   if (!RestoreAngles(controller, pitch_offset, look_up, look_down)) {
-    if (exiting) Report("exit angle restore failed; camera parameters unavailable or changed");
+    if (exiting) Log(reshade::log::level::warning,
+                     "Endfield enhancer: conversation exit angle restore failed; camera parameters unavailable or changed");
     return false;
   }
-  // Endfield's own virtual-camera transition is independent of Brain.ActiveBlend.
-  // Its getters test these two timers (> 0) for transition and input locking.
+
   if (void* camera = Invoke(level_camera, controller)) {
     if (object_class(camera) == level_camera_class) {
       float transition = 0.f, input_lock = 0.f;
@@ -217,10 +213,7 @@ inline bool HoldExitView(void* controller, void* brain, float pitch_offset = 0.f
         float zero = 0.f;
         field_set(camera, transition_time, &zero);
         field_set(camera, input_lock_time, &zero);
-        // ComputeCurrentBlend copies frame[0].blend into workingBlend, then
-        // into ActiveBlend every frame. Complete the stored source as well as
-        // the current result; changing only ActiveBlend lasts one frame.
-        bool finished_source = false;
+
         void* stack = nullptr;
         field_get(brain, frame_stack, &stack);
         void* count = stack ? Invoke(frame_count, stack) : nullptr;
@@ -231,34 +224,27 @@ inline bool HoldExitView(void* controller, void* brain, float pitch_offset = 0.f
             if (object_class(frame) == frame_class) {
               void* source = nullptr;
               field_get(frame, frame_blend, &source);
-              finished_source = CompleteGameplayBlend(source, camera);
+              CompleteGameplayBlend(source, camera);
             }
           }
         }
-        const bool finished_blend = CompleteGameplayBlend(Invoke(active_blend, brain), camera);
-        Log(reshade::log::level::info,
-            (std::string("Endfield enhancer: first-person conversation exit: native transition=")
-             + std::to_string(transition) + " input lock=" + std::to_string(input_lock)
-             + " stored blend completed=" + (finished_source ? "yes" : "no")
-             + " outer blend completed=" + (finished_blend ? "yes" : "no (absent or different target)")).c_str());
+        CompleteGameplayBlend(Invoke(active_blend, brain), camera);
         return true;
       }
     }
   }
-  Report("exit angles restored, but gameplay transition camera unavailable");
-  return true; // This frame was evaluated before restoring the camera angles.
+  Log(reshade::log::level::warning, "Endfield enhancer: conversation exit angles restored, but gameplay transition camera unavailable");
+  return true;
 }
 inline bool Eligible(void* controller) {
-  if (!available) return Report("dialogue API resolution failed");
-  if (object_class(controller) != controller_class) return Report("active camera is not the NPC interaction camera");
-  if (!have_view) return Report("no saved first-person view");
+  if (!available || object_class(controller) != controller_class || !have_view) return false;
   void* manager = nullptr;
   static_get(manager_field, &manager);
-  if (!manager) return Report("no dialogue manager");
+  if (!manager) return false;
   int type = -1;
   field_get(manager, type_field, &type);
-  if (type != normal_type) return Report("cinematic or non-normal dialogue");
-  // A failed managed call must not be mistaken for an absent timeline.
+  if (type != normal_type) return false;
+
   auto call = [&](Il2CppMethod method) -> void* {
     void* exception = nullptr;
     void* result = runtime_invoke(method, manager, nullptr, &exception);
@@ -268,16 +254,14 @@ inline bool Eligible(void* controller) {
   try {
     void* active = call(playing);
     void* pending = call(preparing);
-    if (!active || !pending) return Report("dialogue state unavailable");
-    // Cover preparation too, so the native interaction framing cannot appear
-    // while a normal NPC dialogue is starting.
+    if (!active || !pending) return false;
+
     if (!*static_cast<bool*>(object_unbox(active)) && !*static_cast<bool*>(object_unbox(pending)))
-      return Report("dialogue is neither playing nor preparing");
-    if (call(timeline)) return Report("dialogue timeline is active");
-    if (call(interact_controller) != controller) return Report("dialogue camera ownership mismatch");
-    return Report("eligible NPC chat; applying first-person view", true);
+      return false;
+    if (call(timeline)) return false;
+    return call(interact_controller) == controller;
   } catch (...) {
-    return Report("managed dialogue query failed");
+    return false;
   }
 }
 
@@ -362,11 +346,10 @@ inline bool Resolve(Il2CppImage game, int (*field_flags)(void*), void* (*class_f
   for (auto field : {transition_time, input_lock_time})
     if (!field || (field_flags(field) & 0x10)
         || class_from_type(field_type(field)) != class_from_name(core, "System", "Single")) return false;
-  // Verified against get_inTransition and get_disablePlayerInput disassembly
-  // for the exact supported GameAssembly build already checked by camera::Resolve.
+
   if (field_get_offset(transition_time) != 0x700 || field_get_offset(input_lock_time) != 0x730) return false;
   const void* (*parameter)(Il2CppMethod, uint32_t) = nullptr;
-  if (!core || !playing || !preparing || !timeline || !interact_controller || !camera_param
+  if (!playing || !preparing || !timeline || !interact_controller || !camera_param
       || !horizontal || !vertical || !set_horizontal || !set_vertical || !level_camera
       || !ResolveExport(GetModuleHandleW(L"GameAssembly.dll"), "il2cpp_method_get_param", &parameter)) return false;
   if (class_from_type(parameter(evaluate_curve, 0)) != class_from_name(core, "System", "Single")
@@ -375,10 +358,10 @@ inline bool Resolve(Il2CppImage game, int (*field_flags)(void*), void* (*class_f
     if (class_from_type(parameter(setter, 0)) != class_from_name(core, "System", "Single")
         || class_from_type(parameter(setter, 1)) != class_from_name(core, "System", "Boolean")) return false;
   return class_from_type(return_type(playing)) == class_from_name(core, "System", "Boolean")
-      && class_from_type(return_type(preparing)) == class_from_name(core, "System", "Boolean")
-      && class_from_type(field_type(manager_field)) == manager
-      && class_from_type(return_type(horizontal)) == class_from_name(core, "System", "Single")
-      && class_from_type(return_type(vertical)) == class_from_name(core, "System", "Single")
-      && class_from_type(return_type(level_camera)) == level_camera_class;
+         && class_from_type(return_type(preparing)) == class_from_name(core, "System", "Boolean")
+         && class_from_type(field_type(manager_field)) == manager
+         && class_from_type(return_type(horizontal)) == class_from_name(core, "System", "Single")
+         && class_from_type(return_type(vertical)) == class_from_name(core, "System", "Single")
+         && class_from_type(return_type(level_camera)) == level_camera_class;
 }
-}  // namespace dialogue
+}

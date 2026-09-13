@@ -34,7 +34,7 @@ PFN_vkGetDeviceProcAddr GetSystemDeviceProcAddr() {
   return function;
 }
 
-}  // namespace
+}
 
 extern "C" __declspec(dllexport) PFN_vkVoidFunction VKAPI_CALL
 vkGetInstanceProcAddr(VkInstance instance, const char* name);

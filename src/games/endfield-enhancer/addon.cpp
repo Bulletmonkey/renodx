@@ -27,16 +27,8 @@
 
 namespace {
 
-// Diagnostic build switch: omit the entire screenshot subsystem, including startup hooks.
-#ifdef ENDFIELD_DISABLE_SCREENSHOT_SUPPORT
-constexpr bool kScreenshotSupport = false;
-#else
-constexpr bool kScreenshotSupport = true;
-#endif
-
 constexpr uint32_t kLimiterResumeDelayFrames = 120;
-constexpr uint32_t kFpsTint = 0x5C8FEA;
-constexpr uint32_t kVisualTint = kFpsTint;
+constexpr uint32_t kSettingTint = 0x5C8FEA;
 std::atomic_uint32_t limiter_resume_delay = kLimiterResumeDelayFrames;
 bool hdr_requested_at_startup = false;
 bool hdr_available = false;
@@ -70,32 +62,28 @@ const char* GetHDRUnavailableReason(reshade::api::device_api api) {
 }
 
 bool OnCreateDevice(reshade::api::device_api api, uint32_t&) {
-  // Register before Vulkan device initialization; DX11 never needs the HDR path.
   if (hdr_requested_at_startup && GetHDRUnavailableReason(api) == nullptr) {
     endfield::hdr_output::UseEvents(DLL_PROCESS_ATTACH);
   }
   return false;
 }
 
-void OnInitSwapchain(reshade::api::swapchain* swapchain, bool resize) {
-  (void)resize;
+void OnInitSwapchain(reshade::api::swapchain* swapchain, bool) {
   endfield::lod::OnRendererReset();
   endfield::enhancer::TryInstallStreamlineHook(swapchain->get_device());
   limiter_resume_delay.store(
       kLimiterResumeDelayFrames, std::memory_order_relaxed);
 }
 
-void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
-  // Window controls belong to the HWND, which survives Vulkan swapchain recreation.
-  // The worker removes them when the window is destroyed.
+void OnDestroySwapchain(reshade::api::swapchain*, bool) {
   endfield::lod::OnRendererReset();
   limiter_resume_delay.store(
       kLimiterResumeDelayFrames, std::memory_order_relaxed);
 }
 
 void OnInitDevice(reshade::api::device* device) {
-  if (kScreenshotSupport) endfield::screenshots::observer::OnInitDevice(device);
-  // Install the SSR hook before the first render graph/history.
+  endfield::screenshots::observer::OnInitDevice(device);
+
   if (device != nullptr
       && (device->get_api() == reshade::api::device_api::vulkan
           || device->get_api() == reshade::api::device_api::d3d11)) {
@@ -154,7 +142,7 @@ renodx::utils::settings::Settings settings = {
         .section = "FPS Limit",
         .tooltip = "Removes the game's FPS cap and disables VSync.",
         .labels = {"Off", "On"},
-        .tint = kFpsTint,
+        .tint = kSettingTint,
     },
     fps_limit_setting = new renodx::utils::settings::Setting{
         .key = "FPSLimit",
@@ -164,7 +152,7 @@ renodx::utils::settings::Settings settings = {
         .label = "FPS Limit",
         .section = "FPS Limit",
         .tooltip = "Limits FPS when frame generation is off or paused.",
-        .tint = kFpsTint,
+        .tint = kSettingTint,
         .min = 0.f,
         .max = 480.f,
         .format = "%.0f FPS",
@@ -180,15 +168,13 @@ renodx::utils::settings::Settings settings = {
         .label = "Frame Generation FPS Limit",
         .section = "FPS Limit",
         .tooltip = "Limits FPS while frame generation is active.",
-        .tint = kFpsTint,
+        .tint = kSettingTint,
         .min = 0.f,
         .max = 480.f,
         .format = "%.0f FPS",
         .is_enabled = [] { return frame_generation_available; },
-        .on_change_value = [](float previous, float current) {
-          ClampFpsLimit(
-              frame_generation_fps_limit_setting, previous, current);
-        },
+        .on_change_value = [](float previous, float current) { ClampFpsLimit(
+                                                                   frame_generation_fps_limit_setting, previous, current); },
     },
     background_fps_limit_setting = new renodx::utils::settings::Setting{
         .key = "BackgroundFPSLimit",
@@ -198,7 +184,7 @@ renodx::utils::settings::Settings settings = {
         .label = "Background FPS Limit",
         .section = "FPS Limit",
         .tooltip = "Limits FPS while the game is in the background.",
-        .tint = kFpsTint,
+        .tint = kSettingTint,
         .min = 0.f,
         .max = 120.f,
         .format = "%.0f FPS",
@@ -542,8 +528,8 @@ renodx::utils::settings::Settings settings = {
         .section = "Screenshots",
         .tooltip = "Saves an HDR photo and a color-corrected SDR copy, with reference-white normalization and highlight compression.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
-        .is_enabled = [] { return kScreenshotSupport && !endfield::screenshots::unavailable; },
+        .tint = kSettingTint,
+        .is_enabled = [] { return !endfield::screenshots::unavailable; },
     },
     new renodx::utils::settings::Setting{
         .key = "HideUI",
@@ -554,7 +540,7 @@ renodx::utils::settings::Settings settings = {
         .section = "UI Visibility",
         .tooltip = "Hides the game UI, including UID, latency bar and ping. The ReShade overlay stays available to restore it.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
         .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
     },
     new renodx::utils::settings::Setting{
@@ -566,7 +552,7 @@ renodx::utils::settings::Settings settings = {
         .section = "UI Visibility",
         .tooltip = "Hides only the on-screen UID. This choice remains set when Hide UI is turned off.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
         .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
     },
     new renodx::utils::settings::Setting{
@@ -578,7 +564,7 @@ renodx::utils::settings::Settings settings = {
         .section = "UI Visibility",
         .tooltip = "Hides the connection-quality bar independently of the numeric ping and UID.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
         .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
     },
     new renodx::utils::settings::Setting{
@@ -590,7 +576,7 @@ renodx::utils::settings::Settings settings = {
         .section = "UI Visibility",
         .tooltip = "Hides the numeric ping in milliseconds independently of the connection-quality bar and UID.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
         .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
     },
     new renodx::utils::settings::Setting{
@@ -602,7 +588,7 @@ renodx::utils::settings::Settings settings = {
         .section = "UI Visibility",
         .tooltip = "Hides the on-screen quest tracker while preserving the quest-menu shortcut.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
         .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
     },
     new renodx::utils::settings::Setting{
@@ -614,7 +600,7 @@ renodx::utils::settings::Settings settings = {
         .section = "UI Visibility",
         .tooltip = "Hides the HUD minimap independently of its surrounding buttons. The full-screen map remains available.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
         .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
     },
     new renodx::utils::settings::Setting{
@@ -626,7 +612,7 @@ renodx::utils::settings::Settings settings = {
         .section = "UI Visibility",
         .tooltip = "Hides the top-left HUD buttons and the quest and chat shortcuts around the minimap.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
         .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
     },
     new renodx::utils::settings::Setting{
@@ -638,7 +624,7 @@ renodx::utils::settings::Settings settings = {
         .section = "UI Visibility",
         .tooltip = "Hides the top-right HUD menu buttons. Menu shortcuts remain usable.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
         .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
     },
     new renodx::utils::settings::Setting{
@@ -650,7 +636,7 @@ renodx::utils::settings::Settings settings = {
         .section = "UI Visibility",
         .tooltip = "Hides the HUD utility button and its key hint. The opened utility wheel stays visible and usable.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
         .is_enabled = [] { return !endfield::ui_visibility::unavailable.load(); },
     },
     new renodx::utils::settings::Setting{
@@ -674,8 +660,8 @@ renodx::utils::settings::Settings settings = {
         .section = "Screenshots",
         .tooltip = "Skips the frame and personal-info footer in photo mode, preserving full HDR and SDR dimensions. Other share screens keep their original composition.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
-        .is_enabled = [] { return kScreenshotSupport && endfield::screenshots::enabled >= 0.5f && !endfield::screenshots::unavailable; },
+        .tint = kSettingTint,
+        .is_enabled = [] { return endfield::screenshots::enabled >= 0.5f && !endfield::screenshots::unavailable; },
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
@@ -705,9 +691,8 @@ renodx::utils::settings::Settings settings = {
         .section = "Ambient Occlusion",
         .tooltip = "Renders ambient occlusion at full resolution. Off restores the vanilla half resolution.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
         .parse = [](float value) {
-          // Migrate saved Double Resolution selections to Full Resolution.
           return value == 1.f || value == 2.f ? 1.f : 0.f;
         },
     },
@@ -721,9 +706,8 @@ renodx::utils::settings::Settings settings = {
         .section = "Screen Space Reflections",
         .tooltip = "Renders reflections and their depth at full resolution, with matching reflection alignment. Off restores the vanilla half resolution.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
         .parse = [](float value) {
-          // Write() also runs on initial config load, not only UI changes.
           endfield::enhancer::ssr_full_depth = value == 1.f ? 1.f : 0.f;
           return value == 1.f ? 1.f : 0.f;
         },
@@ -738,7 +722,7 @@ renodx::utils::settings::Settings settings = {
         .section = "Screen Space Reflections",
         .tooltip = "Uses resolution-corrected SSR at Full Resolution. Requires RenoDX Improved SSR On. Automatically selects DirectX 11 or Vulkan. Off leaves RenoDX in control.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
         .is_enabled = [] { return ssr_override_available; },
     },
     new renodx::utils::settings::Setting{
@@ -757,7 +741,7 @@ renodx::utils::settings::Settings settings = {
         .section = "Depth of Field",
         .tooltip = "Controls depth-of-field resolution: Vanilla uses half resolution; Full and Double increase it.",
         .labels = {"Vanilla", "Full", "Double"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
     },
     new renodx::utils::settings::Setting{
         .key = "ForceDoF",
@@ -768,7 +752,7 @@ renodx::utils::settings::Settings settings = {
         .section = "Depth of Field",
         .tooltip = "Enables high-quality depth of field with manual controls.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
     },
     new renodx::utils::settings::Setting{
         .key = "DoFFocusDistance",
@@ -778,7 +762,7 @@ renodx::utils::settings::Settings settings = {
         .label = "Focus Distance",
         .section = "Depth of Field",
         .tooltip = "Controls the distance from the camera that remains in focus.",
-        .tint = kVisualTint,
+        .tint = kSettingTint,
         .min = 0.5f,
         .max = 200.f,
         .format = "%.1f",
@@ -792,7 +776,7 @@ renodx::utils::settings::Settings settings = {
         .label = "Near Blur Strength",
         .section = "Depth of Field",
         .tooltip = "Controls foreground blur strength.",
-        .tint = kVisualTint,
+        .tint = kSettingTint,
         .min = 0.f,
         .max = 10.f,
         .format = "%.1f",
@@ -806,7 +790,7 @@ renodx::utils::settings::Settings settings = {
         .label = "Far Blur Strength",
         .section = "Depth of Field",
         .tooltip = "Controls background blur strength.",
-        .tint = kVisualTint,
+        .tint = kSettingTint,
         .min = 0.f,
         .max = 10.f,
         .format = "%.1f",
@@ -822,7 +806,7 @@ renodx::utils::settings::Settings settings = {
         .section = "DLSS-G HDR Patch",
         .tooltip = "Enables HDR with DLSS Frame Generation. Requires the base Endfield RenoDX addon and bundled vulkan-1.dll. Restart required.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
         .is_enabled = [] { return hdr_available; },
     },
     hdr_warning_setting = new renodx::utils::settings::Setting{
@@ -858,7 +842,7 @@ renodx::utils::settings::Settings settings = {
         .section = "Geometry",
         .tooltip = "Keeps geometry at its highest detail level. Can significantly increase VRAM usage and reduce performance.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
     },
     new renodx::utils::settings::Setting{
         .key = "NPCModelLimitOverride",
@@ -869,7 +853,7 @@ renodx::utils::settings::Settings settings = {
         .section = "Entity Population & Distance",
         .tooltip = "Off restores the game's values.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
     },
     new renodx::utils::settings::Setting{
         .key = "NPCModelLimit",
@@ -879,8 +863,10 @@ renodx::utils::settings::Settings settings = {
         .label = "NPC Model Limit",
         .section = "Entity Population & Distance",
         .tooltip = "Maximum active NPC models. Off-camera unloads free slots.",
-        .tint = kVisualTint,
-        .min = 50.f, .max = endfield::npc_distance::kMaxModelLimit, .format = "%d",
+        .tint = kSettingTint,
+        .min = 50.f,
+        .max = endfield::npc_distance::kMaxModelLimit,
+        .format = "%d",
         .is_enabled = [] { return endfield::npc_distance::limit_enabled >= 0.5f && !endfield::npc_distance::unavailable; },
     },
     new renodx::utils::settings::Setting{
@@ -892,7 +878,7 @@ renodx::utils::settings::Settings settings = {
         .section = "Entity Population & Distance",
         .tooltip = "Off restores the game's values.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
     },
     new renodx::utils::settings::Setting{
         .key = "NPCModelDistance",
@@ -901,8 +887,10 @@ renodx::utils::settings::Settings settings = {
         .label = "NPC Model Distance",
         .section = "Entity Population & Distance",
         .tooltip = "Adjusts how far NPC models remain loaded.",
-        .tint = kVisualTint,
-        .min = 1.f, .max = endfield::npc_distance::kMaxDistanceMultiplier, .format = "%.1fx",
+        .tint = kSettingTint,
+        .min = 1.f,
+        .max = endfield::npc_distance::kMaxDistanceMultiplier,
+        .format = "%.1fx",
         .is_enabled = [] { return endfield::npc_distance::regular_enabled >= 0.5f && !endfield::npc_distance::unavailable; },
 
         .parse = SnapEntityDistance,
@@ -917,7 +905,7 @@ renodx::utils::settings::Settings settings = {
         .section = "Entity Population & Distance",
         .tooltip = "Off restores the game's values.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
     },
     new renodx::utils::settings::Setting{
         .key = "AmbientNPCModelDistance",
@@ -926,8 +914,10 @@ renodx::utils::settings::Settings settings = {
         .label = "Ambient NPC Distance",
         .section = "Entity Population & Distance",
         .tooltip = "Adjusts the loading distance for background crowds.",
-        .tint = kVisualTint,
-        .min = 1.f, .max = endfield::npc_distance::kMaxDistanceMultiplier, .format = "%.1fx",
+        .tint = kSettingTint,
+        .min = 1.f,
+        .max = endfield::npc_distance::kMaxDistanceMultiplier,
+        .format = "%.1fx",
         .is_enabled = [] { return endfield::npc_distance::ambient_enabled >= 0.5f && !endfield::npc_distance::unavailable; },
 
         .parse = SnapEntityDistance,
@@ -942,7 +932,7 @@ renodx::utils::settings::Settings settings = {
         .section = "Entity Population & Distance",
         .tooltip = "Off restores the game's values.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
     },
     new renodx::utils::settings::Setting{
         .key = "EnemyLoadDistance",
@@ -951,8 +941,10 @@ renodx::utils::settings::Settings settings = {
         .label = "Enemy Load Distance",
         .section = "Entity Population & Distance",
         .tooltip = "Adjusts how far enemies remain loaded.",
-        .tint = kVisualTint,
-        .min = 1.f, .max = 10.f, .format = "%.1fx",
+        .tint = kSettingTint,
+        .min = 1.f,
+        .max = 10.f,
+        .format = "%.1fx",
         .is_enabled = [] { return endfield::world_distance::enemies_enabled >= 0.5f && !endfield::world_distance::unavailable; },
 
         .parse = SnapEntityDistance,
@@ -967,7 +959,7 @@ renodx::utils::settings::Settings settings = {
         .section = "Entity Population & Distance",
         .tooltip = "Off restores the game's values.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
     },
     new renodx::utils::settings::Setting{
         .key = "InteractiveLoadDistance",
@@ -976,8 +968,10 @@ renodx::utils::settings::Settings settings = {
         .label = "Interactive Entity Load Distance",
         .section = "Entity Population & Distance",
         .tooltip = "Adjusts the loading distance for interactive objects, such as teleporters.",
-        .tint = kVisualTint,
-        .min = 1.f, .max = 10.f, .format = "%.1fx",
+        .tint = kSettingTint,
+        .min = 1.f,
+        .max = 10.f,
+        .format = "%.1fx",
         .is_enabled = [] { return endfield::world_distance::interactive_enabled >= 0.5f && !endfield::world_distance::unavailable; },
 
         .parse = SnapEntityDistance,
@@ -1004,8 +998,10 @@ renodx::utils::settings::Settings settings = {
         .section = "NPC Unloading (Experimental)",
         .tooltip = "Unloads background crowds outside the camera view.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
-        .min = 0.0f, .max = 1.0f, .format = "%d",
+        .tint = kSettingTint,
+        .min = 0.0f,
+        .max = 1.0f,
+        .format = "%d",
         .is_enabled = [] { return !endfield::npc_offcamera::unavailable; },
     },
     new renodx::utils::settings::Setting{
@@ -1017,8 +1013,10 @@ renodx::utils::settings::Settings settings = {
         .section = "NPC Unloading (Experimental)",
         .tooltip = "Unloads ordinary NPC models outside the camera view.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
-        .min = 0.0f, .max = 1.0f, .format = "%d",
+        .tint = kSettingTint,
+        .min = 0.0f,
+        .max = 1.0f,
+        .format = "%d",
         .is_enabled = [] { return !endfield::npc_offcamera::unavailable; },
     },
     new renodx::utils::settings::Setting{
@@ -1030,8 +1028,10 @@ renodx::utils::settings::Settings settings = {
         .section = "NPC Unloading (Experimental)",
         .tooltip = "Prioritizes nearby crowds and shares work between unfinished loads.",
         .labels = {"Default", "Closest First"},
-        .tint = kVisualTint,
-        .min = 0.0f, .max = 1.0f, .format = "%d",
+        .tint = kSettingTint,
+        .min = 0.0f,
+        .max = 1.0f,
+        .format = "%d",
         .is_enabled = [] { return !endfield::npc_offcamera::unavailable && endfield::npc_offcamera::enabled >= 0.5f; },
     },
     new renodx::utils::settings::Setting{
@@ -1042,8 +1042,10 @@ renodx::utils::settings::Settings settings = {
         .label = "View Recheck Interval",
         .section = "NPC Unloading (Experimental)",
         .tooltip = "Lower values let NPC models respond to camera turns sooner.",
-        .tint = kVisualTint,
-        .min = 0.05f, .max = 1.0f, .format = "%.2f s",
+        .tint = kSettingTint,
+        .min = 0.05f,
+        .max = 1.0f,
+        .format = "%.2f s",
         .is_enabled = [] { return !endfield::npc_offcamera::unavailable; },
     },
     new renodx::utils::settings::Setting{
@@ -1054,8 +1056,10 @@ renodx::utils::settings::Settings settings = {
         .label = "Unload Delay",
         .section = "NPC Unloading (Experimental)",
         .tooltip = "Seconds outside the view before unloading.",
-        .tint = kVisualTint,
-        .min = 0.5f, .max = 10.0f, .format = "%.1f s",
+        .tint = kSettingTint,
+        .min = 0.5f,
+        .max = 10.0f,
+        .format = "%.1f s",
         .is_enabled = [] { return !endfield::npc_offcamera::unavailable && (endfield::npc_offcamera::enabled >= 0.5f || endfield::npc_offcamera::npcs_enabled >= 0.5f); },
     },
     new renodx::utils::settings::Setting{
@@ -1066,8 +1070,10 @@ renodx::utils::settings::Settings settings = {
         .label = "View Margin",
         .section = "NPC Unloading (Experimental)",
         .tooltip = "Extra space around the view for earlier loading.",
-        .tint = kVisualTint,
-        .min = 0.0f, .max = 100.0f, .format = "%.0f%%",
+        .tint = kSettingTint,
+        .min = 0.0f,
+        .max = 100.0f,
+        .format = "%.0f%%",
         .is_enabled = [] { return !endfield::npc_offcamera::unavailable && (endfield::npc_offcamera::enabled >= 0.5f || endfield::npc_offcamera::npcs_enabled >= 0.5f); },
     },
     new renodx::utils::settings::Setting{
@@ -1078,8 +1084,10 @@ renodx::utils::settings::Settings settings = {
         .label = "Nearby Protection",
         .section = "NPC Unloading (Experimental)",
         .tooltip = "Keeps nearby entities loaded in every direction.",
-        .tint = kVisualTint,
-        .min = 5.0f, .max = 100.0f, .format = "%.0f m",
+        .tint = kSettingTint,
+        .min = 5.0f,
+        .max = 100.0f,
+        .format = "%.0f m",
         .is_enabled = [] { return !endfield::npc_offcamera::unavailable && (endfield::npc_offcamera::enabled >= 0.5f || endfield::npc_offcamera::npcs_enabled >= 0.5f); },
     },
     new renodx::utils::settings::Setting{
@@ -1097,8 +1105,10 @@ renodx::utils::settings::Settings settings = {
         .section = "NPC Culling",
         .tooltip = "Controls animation culling for off-camera and obscured NPCs.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
-        .min = 0.0f, .max = 1.0f, .format = "%d",
+        .tint = kSettingTint,
+        .min = 0.0f,
+        .max = 1.0f,
+        .format = "%d",
         .is_enabled = [] { return !endfield::npc_loading::unavailable; },
     },
     new renodx::utils::settings::Setting{
@@ -1110,8 +1120,10 @@ renodx::utils::settings::Settings settings = {
         .section = "NPC Culling",
         .tooltip = "LOD 0 includes the highest-detail NPCs.",
         .labels = {"LOD 0 (All)", "LOD 1", "LOD 2", "LOD 3", "LOD 4"},
-        .tint = kVisualTint,
-        .min = 0.0f, .max = 4.0f, .format = "%d",
+        .tint = kSettingTint,
+        .min = 0.0f,
+        .max = 4.0f,
+        .format = "%d",
         .is_enabled = [] { return !endfield::npc_loading::unavailable && endfield::npc_loading::culling_mode == 1.f; },
     },
     new renodx::utils::settings::Setting{
@@ -1122,8 +1134,10 @@ renodx::utils::settings::Settings settings = {
         .label = "LOD Check Interval",
         .section = "NPC Culling",
         .tooltip = "Seconds between visibility and LOD checks. Lower values respond faster.",
-        .tint = kVisualTint,
-        .min = 0.05f, .max = 2.0f, .format = "%.2f s",
+        .tint = kSettingTint,
+        .min = 0.05f,
+        .max = 2.0f,
+        .format = "%.2f s",
         .is_enabled = [] { return !endfield::npc_loading::unavailable && endfield::npc_loading::culling_mode == 1.f; },
     },
     new renodx::utils::settings::Setting{
@@ -1135,8 +1149,10 @@ renodx::utils::settings::Settings settings = {
         .section = "NPC Loading",
         .tooltip = "Adjusts how quickly background NPCs load.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
-        .min = 0.0f, .max = 1.0f, .format = "%d",
+        .tint = kSettingTint,
+        .min = 0.0f,
+        .max = 1.0f,
+        .format = "%d",
         .is_enabled = [] { return !endfield::npc_loading::unavailable; },
     },
     new renodx::utils::settings::Setting{
@@ -1147,8 +1163,10 @@ renodx::utils::settings::Settings settings = {
         .label = "New NPCs per Frame",
         .section = "NPC Loading",
         .tooltip = "Maximum NPC creations started each frame.",
-        .tint = kVisualTint,
-        .min = 1.0f, .max = 8.0f, .format = "%d",
+        .tint = kSettingTint,
+        .min = 1.0f,
+        .max = 8.0f,
+        .format = "%d",
         .is_enabled = [] { return !endfield::npc_loading::unavailable && endfield::npc_loading::loading_override >= 0.5f; },
     },
     new renodx::utils::settings::Setting{
@@ -1159,8 +1177,10 @@ renodx::utils::settings::Settings settings = {
         .label = "Loading Steps per Frame",
         .section = "NPC Loading",
         .tooltip = "Maximum NPC loading steps processed each frame.",
-        .tint = kVisualTint,
-        .min = 1.0f, .max = 32.0f, .format = "%d",
+        .tint = kSettingTint,
+        .min = 1.0f,
+        .max = 32.0f,
+        .format = "%d",
         .is_enabled = [] { return !endfield::npc_loading::unavailable && endfield::npc_loading::loading_override >= 0.5f; },
     },
     new renodx::utils::settings::Setting{
@@ -1171,8 +1191,10 @@ renodx::utils::settings::Settings settings = {
         .label = "Loading Time Budget",
         .section = "NPC Loading",
         .tooltip = "Maximum frame time spent creating NPCs.",
-        .tint = kVisualTint,
-        .min = 0.25f, .max = 5.0f, .format = "%.2f ms",
+        .tint = kSettingTint,
+        .min = 0.25f,
+        .max = 5.0f,
+        .format = "%.2f ms",
         .is_enabled = [] { return !endfield::npc_loading::unavailable && endfield::npc_loading::loading_override >= 0.5f; },
     },
     new renodx::utils::settings::Setting{
@@ -1183,8 +1205,10 @@ renodx::utils::settings::Settings settings = {
         .label = "Loaded NPC Priority",
         .section = "NPC Loading",
         .tooltip = "Higher values favor keeping already-loaded NPCs.",
-        .tint = kVisualTint,
-        .min = 0.0f, .max = 1000.0f, .format = "%d",
+        .tint = kSettingTint,
+        .min = 0.0f,
+        .max = 1000.0f,
+        .format = "%d",
         .is_enabled = [] { return !endfield::npc_loading::unavailable && endfield::npc_loading::loading_override >= 0.5f; },
     },
     new renodx::utils::settings::Setting{
@@ -1196,7 +1220,7 @@ renodx::utils::settings::Settings settings = {
         .section = "Uncensor",
         .tooltip = "Disables camera-driven character transparency. May also affect proximity fading.",
         .labels = {"Off", "On"},
-        .tint = kVisualTint,
+        .tint = kSettingTint,
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
@@ -1206,7 +1230,7 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
-        .label = "- Addon developed by ItsaRat.",
+        .label = "- Addon developed by ItsTheSewerRat.",
         .section = "About",
     },
     new renodx::utils::settings::Setting{
@@ -1216,7 +1240,12 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
-        .label = "- Special thanks to RankFTW.",
+        .label = "- Special thanks to RankFTW for ReLimiter.",
+        .section = "About",
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "- Special thanks to EightySixK for his original FPS Unlocker and Graphical Enhancement Tool.",
         .section = "About",
     },
     new renodx::utils::settings::Setting{
@@ -1232,13 +1261,13 @@ renodx::utils::settings::Settings settings = {
 
 void OnOverlay(reshade::api::effect_runtime* runtime) {
   overlay_device = runtime->get_device();
-  // Use this runtime's renderer, not DLL presence or a temporary probe device.
+
   frame_generation_available = runtime->get_device()->get_api() == reshade::api::device_api::vulkan;
   ssr_override_available = HasSsrBaseAddon(runtime->get_device()->get_api());
   const char* reason = GetHDRUnavailableReason(runtime->get_device()->get_api());
   hdr_available = reason == nullptr;
   hdr_warning_setting->label = reason == nullptr ? "" : reason;
-  // Match ReShade's standard text size while retaining its global UI scaling.
+
   ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase);
   endfield::menu::Draw(settings);
   ImGui::PopFont();
@@ -1280,7 +1309,7 @@ void OnPresent(
   endfield::npc_offcamera::OnPresent();
   endfield::npc_loading::OnPresent();
   endfield::world_distance::OnPresent();
-  if (kScreenshotSupport) endfield::screenshots::OnPresent();
+  endfield::screenshots::OnPresent();
 
   uint32_t delay = limiter_resume_delay.load(std::memory_order_relaxed);
   if (delay != 0) {
@@ -1295,7 +1324,7 @@ void OnPresent(
           window == nullptr || GetForegroundWindow() == window);
 }
 
-}  // namespace
+}
 
 extern "C" __declspec(dllexport) const char* const NAME =
     "RenoDX: Arknights Endfield Enhancer";
@@ -1312,9 +1341,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
     case DLL_PROCESS_ATTACH:
       endfield::runtime_status::addon_module = h_module;
       endfield::cursor_guard::status_log = [](bool installed) {
-        reshade::log::message(installed ? reshade::log::level::info : reshade::log::level::warning,
-            installed ? "Endfield cursor guard: Unity cursor imports installed."
-                      : "Endfield cursor guard: refused unsupported build, changed imports, or failed transaction; native cursor behavior retained.");
+        if (!installed) reshade::log::message(reshade::log::level::warning,
+                                              "Endfield cursor guard: refused unsupported build, changed imports, or failed transaction; native cursor behavior retained.");
       };
       if (!reshade::register_addon(h_module)) return FALSE;
       renodx::utils::settings::use_presets = false;
@@ -1328,18 +1356,18 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
       reshade::register_event<reshade::addon_event::present>(OnPresent);
       reshade::register_event<reshade::addon_event::reshade_overlay>(endfield::shortcuts::OnFrame);
       reshade::register_event<reshade::addon_event::reshade_present>(endfield::camera::detail::freecam::OnCursorPresent);
-      if (kScreenshotSupport) reshade::register_event<reshade::addon_event::init_command_list>(endfield::screenshots::observer::OnInitCommandList);
-      if (kScreenshotSupport) reshade::register_event<reshade::addon_event::init_command_queue>(endfield::screenshots::observer::OnInitQueue);
-      if (kScreenshotSupport) reshade::register_event<reshade::addon_event::destroy_device>(endfield::screenshots::observer::OnDestroyDevice);
+      reshade::register_event<reshade::addon_event::init_command_list>(endfield::screenshots::observer::OnInitCommandList);
+      reshade::register_event<reshade::addon_event::init_command_queue>(endfield::screenshots::observer::OnInitQueue);
+      reshade::register_event<reshade::addon_event::destroy_device>(endfield::screenshots::observer::OnDestroyDevice);
       break;
     case DLL_PROCESS_DETACH:
       endfield::window_enhancements::request_window_enhancements_shutdown();
       reshade::unregister_event<reshade::addon_event::present>(OnPresent);
       reshade::unregister_event<reshade::addon_event::reshade_overlay>(endfield::shortcuts::OnFrame);
       reshade::unregister_event<reshade::addon_event::reshade_present>(endfield::camera::detail::freecam::OnCursorPresent);
-      if (kScreenshotSupport) reshade::unregister_event<reshade::addon_event::init_command_list>(endfield::screenshots::observer::OnInitCommandList);
-      if (kScreenshotSupport) reshade::unregister_event<reshade::addon_event::init_command_queue>(endfield::screenshots::observer::OnInitQueue);
-      if (kScreenshotSupport) reshade::unregister_event<reshade::addon_event::destroy_device>(endfield::screenshots::observer::OnDestroyDevice);
+      reshade::unregister_event<reshade::addon_event::init_command_list>(endfield::screenshots::observer::OnInitCommandList);
+      reshade::unregister_event<reshade::addon_event::init_command_queue>(endfield::screenshots::observer::OnInitQueue);
+      reshade::unregister_event<reshade::addon_event::destroy_device>(endfield::screenshots::observer::OnDestroyDevice);
       reshade::unregister_event<reshade::addon_event::destroy_swapchain>(
           OnDestroySwapchain);
       reshade::unregister_event<reshade::addon_event::init_swapchain>(
@@ -1348,9 +1376,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
       reshade::unregister_event<reshade::addon_event::create_device>(OnCreateDevice);
       reshade::unregister_event<reshade::addon_event::copy_resource>(endfield::hdr_output::OnPresentationCopy);
       reshade::unregister_event<reshade::addon_event::copy_texture_region>(endfield::hdr_output::OnPresentationCopyRegion);
-      if (kScreenshotSupport) endfield::screenshots::Shutdown();
-      if (kScreenshotSupport && endfield::screenshots::photo_fp16_support) endfield::screenshots::photo_alpha::Use(reason);
-      if (kScreenshotSupport && endfield::screenshots::photo_fp16_support) endfield::screenshots::photo_resource::Use(reason);
+      endfield::screenshots::Shutdown();
+      endfield::screenshots::photo_alpha::Use(reason);
+      endfield::screenshots::photo_resource::Use(reason);
       endfield::world_distance::Shutdown();
       endfield::npc_offcamera::Shutdown();
       endfield::npc_loading::Shutdown();
@@ -1371,12 +1399,10 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
   renodx::utils::settings::Use(reason, &settings);
   if (reason == DLL_PROCESS_ATTACH) {
     endfield::ssr_resolve::Use(reason);
-    if (kScreenshotSupport && endfield::screenshots::photo_fp16_support) endfield::screenshots::photo_resource::Use(reason);
-    if (kScreenshotSupport && endfield::screenshots::photo_fp16_support) endfield::screenshots::photo_alpha::Use(reason);
+    endfield::screenshots::photo_resource::Use(reason);
+    endfield::screenshots::photo_alpha::Use(reason);
     hdr_requested_at_startup = endfield::enhancer::hdr_frame_generation >= 0.5f;
     if (hdr_requested_at_startup && endfield::vulkan_loader::IsInstalled()) {
-      // Reserve copy observation before the base addon can consume these events.
-      // The callbacks stay inactive until Vulkan HDR hooks are installed.
       reshade::register_event<reshade::addon_event::copy_resource>(endfield::hdr_output::OnPresentationCopy);
       reshade::register_event<reshade::addon_event::copy_texture_region>(endfield::hdr_output::OnPresentationCopyRegion);
     }
@@ -1386,8 +1412,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
     reshade::register_overlay(renodx::utils::settings::overlay_title.c_str(), OnOverlay);
   }
   renodx::utils::swapchain::Use(reason);
-  // Cross-addon utility teardown may transfer event ownership. Keep this
-  // addon registered until every utility has finished unregistering.
+
   if (reason == DLL_PROCESS_DETACH) reshade::unregister_addon(h_module);
   return TRUE;
 }

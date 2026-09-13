@@ -16,9 +16,8 @@ enum Status : uint32_t {
 };
 
 inline bool IsInstalled() {
-  // Identify our loaded bridge, not the system Vulkan loader or a file on disk.
   const HMODULE loader = GetModuleHandleW(L"vulkan-1.dll");
   return loader != nullptr && GetProcAddress(loader, kStatusExport) != nullptr;
 }
 
-}  // namespace endfield::vulkan_loader
+}

@@ -1,7 +1,5 @@
 #pragma once
 
-// Generated from the Windows Vulkan loader export table. The proc-address
-// functions are implemented locally by vulkan_loader_forwarder.cpp.
 #pragma comment(linker, "/export:vkAcquireNextImage2KHR=C:\\Windows\\System32\\vulkan-1.vkAcquireNextImage2KHR")
 #pragma comment(linker, "/export:vkAcquireNextImageKHR=C:\\Windows\\System32\\vulkan-1.vkAcquireNextImageKHR")
 #pragma comment(linker, "/export:vkAllocateCommandBuffers=C:\\Windows\\System32\\vulkan-1.vkAllocateCommandBuffers")

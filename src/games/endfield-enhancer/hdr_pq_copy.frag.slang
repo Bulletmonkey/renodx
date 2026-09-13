@@ -1,4 +1,3 @@
-// Streamline returns display-ready PQ. Preserve it without another output encode.
 [[vk::binding(0, 0)]] Texture2D<float4> t0;
 
 float4 main(float4 position : SV_POSITION) : SV_TARGET {

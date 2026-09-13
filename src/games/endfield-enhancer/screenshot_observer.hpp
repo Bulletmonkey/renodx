@@ -7,6 +7,7 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <set>
 #include <vector>
 #include "../../utils/hash.hpp"
 #include "./screenshot_color.hpp"
@@ -21,85 +22,88 @@ inline DestroyLayout destroy_layout = nullptr;
 inline PushConstants push_constants = nullptr;
 inline bool device_hooked = false, commands_hooked = false;
 inline std::mutex mutex;
-inline std::map<std::pair<device*,uint64_t>,bool> layouts;
-inline std::map<std::pair<device*,uint64_t>,uint32_t> calibration_layouts;
-struct Calibration { float value = 0; uint64_t time = 0, layout = 0; };
-inline std::map<device*,Calibration> calibrations;
+inline std::set<std::pair<device*, uint64_t>> layouts;
+inline std::map<std::pair<device*, uint64_t>, uint32_t> calibration_layouts;
+struct Calibration {
+  float value = 0;
+  uint64_t time = 0, layout = 0;
+};
+inline std::map<device*, Calibration> calibrations;
 inline ColorConfig latest;
 inline device* latest_device = nullptr;
 inline uint64_t latest_layout = 0, timestamp = 0;
 
 inline bool IsOutputShader(const shader_desc& shader) {
-  // Unmodified Endfield Vulkan SwapChainInjectData shader, 8 float push constants.
-  // Refuse unknown revisions instead of guessing the contents of a 32-byte upload.
   return shader.code && shader.code_size == 18416
-      && renodx::utils::hash::ComputeCRC32(static_cast<const uint8_t*>(shader.code),shader.code_size) == 0xa2fa88dcu;
+         && renodx::utils::hash::ComputeCRC32(static_cast<const uint8_t*>(shader.code), shader.code_size) == 0xa2fa88dcu;
 }
 inline bool HookCreatePipeline(device* dev, pipeline_layout layout, uint32_t count,
                                const pipeline_subobject* objects, pipeline* output) {
-  const bool result = create_pipeline(dev,layout,count,objects,output);
+  const bool result = create_pipeline(dev, layout, count, objects, output);
   if (!result) return result;
   bool matches = false;
   uint32_t calibration_count = 0;
   for (uint32_t i = 0; i < count; ++i) {
-    if (objects[i].type == pipeline_subobject_type::pixel_shader && objects[i].count == 1 && objects[i].data)
-    {
+    if (objects[i].type == pipeline_subobject_type::pixel_shader && objects[i].count == 1 && objects[i].data) {
       const auto& shader = *static_cast<const shader_desc*>(objects[i].data);
       matches |= IsOutputShader(shader);
-      // Known local and installed HDR revisions. Both use float 56 for Tech Test Look.
+
       if (shader.code && (shader.code_size == 10500 || shader.code_size == 10084)) {
-        const auto crc = renodx::utils::hash::ComputeCRC32(static_cast<const uint8_t*>(shader.code),shader.code_size);
-        if (shader.code_size == 10500 && crc == 0xadf9a37au) calibration_count = 61;
-        else if (shader.code_size == 10084 && crc == 0x7b147985u) calibration_count = 62;
+        const auto crc = renodx::utils::hash::ComputeCRC32(static_cast<const uint8_t*>(shader.code), shader.code_size);
+        if (shader.code_size == 10500 && crc == 0xadf9a37au)
+          calibration_count = 61;
+        else if (shader.code_size == 10084 && crc == 0x7b147985u)
+          calibration_count = 62;
       }
     }
   }
   std::lock_guard lock(mutex);
   if (matches) {
-    layouts[{dev,layout.handle}] = true;
+    layouts.insert({dev, layout.handle});
   }
-  // Pipeline layouts may be shared with other shaders; only destruction invalidates them.
+
   if (calibration_count != 0) {
-    calibration_layouts[{dev,layout.handle}] = calibration_count;
+    calibration_layouts[{dev, layout.handle}] = calibration_count;
   }
   return result;
 }
 inline void HookDestroyLayout(device* dev, pipeline_layout layout) {
   {
     std::lock_guard lock(mutex);
-    layouts.erase({dev,layout.handle});
-    calibration_layouts.erase({dev,layout.handle});
+    layouts.erase({dev, layout.handle});
+    calibration_layouts.erase({dev, layout.handle});
     if (auto it = calibrations.find(dev); it != calibrations.end() && it->second.layout == layout.handle) calibrations.erase(it);
     if (latest_device == dev && latest_layout == layout.handle) timestamp = 0;
   }
-  destroy_layout(dev,layout);
+  destroy_layout(dev, layout);
 }
 inline void HookPushConstants(command_list* cmd, shader_stage stages, pipeline_layout layout,
                               uint32_t param, uint32_t first, uint32_t count, const void* values) {
   if (first == 0 && count == 8 && values && (stages & shader_stage::pixel) == shader_stage::pixel) {
     std::lock_guard lock(mutex);
     auto* dev = cmd->get_device();
-    if (layouts.contains({dev,layout.handle})) {
-      std::array<float,8> data;
-      std::memcpy(data.data(),values,sizeof(data));
-      latest = {.white_nits=data[1], .peak_nits=data[0], .decoding=data[2],
-                .gamma=data[3], .custom_color_space=data[4], .output_encoding=data[6]};
-      latest_device=dev; latest_layout=layout.handle; timestamp=GetTickCount64();
+    if (layouts.contains({dev, layout.handle})) {
+      std::array<float, 8> data;
+      std::memcpy(data.data(), values, sizeof(data));
+      latest = {.white_nits = data[1], .peak_nits = data[0], .decoding = data[2], .gamma = data[3], .custom_color_space = data[4], .output_encoding = data[6]};
+      latest_device = dev;
+      latest_layout = layout.handle;
+      timestamp = GetTickCount64();
     }
   }
-  // Accept only the upload size belonging to the recognized shader revision.
+
   if (first == 0 && (count == 61 || count == 62) && values && (stages & shader_stage::pixel) == shader_stage::pixel) {
     std::lock_guard lock(mutex);
     auto* dev = cmd->get_device();
-    if (const auto it = calibration_layouts.find({dev,layout.handle});
+    if (const auto it = calibration_layouts.find({dev, layout.handle});
         it != calibration_layouts.end() && count == it->second) {
       float value;
-      std::memcpy(&value,static_cast<const uint8_t*>(values)+56*sizeof(float),sizeof(value));
-      calibrations[dev] = {value,GetTickCount64(),layout.handle};
+      std::memcpy(&value, static_cast<const uint8_t*>(values) + 56 * sizeof(float), sizeof(value));
+      calibrations[dev] = {value, GetTickCount64(), layout.handle};
     }
   }
-  // Observation only: preserve the original pointer, offsets, stages and command.
-  push_constants(cmd,stages,layout,param,first,count,values);
+
+  push_constants(cmd, stages, layout, param, first, count, values);
 }
 inline bool ReadColor(ColorConfig* config) {
   std::lock_guard lock(mutex);
@@ -113,50 +117,62 @@ inline bool ReadColor(ColorConfig* config) {
 }
 inline bool ChangeHooks(bool attach, bool device_hooks) {
   std::vector<HANDLE> threads;
-  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD,0);
+  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
   THREADENTRY32 entry{sizeof(entry)};
-  bool ok = snapshot != INVALID_HANDLE_VALUE && Thread32First(snapshot,&entry);
+  bool ok = snapshot != INVALID_HANDLE_VALUE && Thread32First(snapshot, &entry);
   if (ok) do {
-    if (entry.th32OwnerProcessID != GetCurrentProcessId() || entry.th32ThreadID == GetCurrentThreadId()) continue;
-    HANDLE thread=OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION,FALSE,entry.th32ThreadID);
-    if (thread) threads.push_back(thread);
-    else if (GetLastError()!=ERROR_INVALID_PARAMETER) {ok=false;break;}
-  } while(Thread32Next(snapshot,&entry));
-  if(snapshot!=INVALID_HANDLE_VALUE) CloseHandle(snapshot);
-  if(ok && DetourTransactionBegin()==NO_ERROR) {
-    for(HANDLE thread:threads) if(DetourUpdateThread(thread)!=NO_ERROR){ok=false;break;}
-    if(device_hooks) {
-      if(ok) ok=(attach?DetourAttach(&create_pipeline,HookCreatePipeline):DetourDetach(&create_pipeline,HookCreatePipeline))==NO_ERROR;
-      if(ok) ok=(attach?DetourAttach(&destroy_layout,HookDestroyLayout):DetourDetach(&destroy_layout,HookDestroyLayout))==NO_ERROR;
-    } else if(ok) ok=(attach?DetourAttach(&push_constants,HookPushConstants):DetourDetach(&push_constants,HookPushConstants))==NO_ERROR;
-    if(ok) ok=DetourTransactionCommit()==NO_ERROR;else DetourTransactionAbort();
-  } else ok=false;
-  for(HANDLE thread:threads) CloseHandle(thread);
+      if (entry.th32OwnerProcessID != GetCurrentProcessId() || entry.th32ThreadID == GetCurrentThreadId()) continue;
+      HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, entry.th32ThreadID);
+      if (thread)
+        threads.push_back(thread);
+      else if (GetLastError() != ERROR_INVALID_PARAMETER) {
+        ok = false;
+        break;
+      }
+    } while (Thread32Next(snapshot, &entry));
+  if (snapshot != INVALID_HANDLE_VALUE) CloseHandle(snapshot);
+  if (ok && DetourTransactionBegin() == NO_ERROR) {
+    for (HANDLE thread : threads)
+      if (DetourUpdateThread(thread) != NO_ERROR) {
+        ok = false;
+        break;
+      }
+    if (device_hooks) {
+      if (ok) ok = (attach ? DetourAttach(&create_pipeline, HookCreatePipeline) : DetourDetach(&create_pipeline, HookCreatePipeline)) == NO_ERROR;
+      if (ok) ok = (attach ? DetourAttach(&destroy_layout, HookDestroyLayout) : DetourDetach(&destroy_layout, HookDestroyLayout)) == NO_ERROR;
+    } else if (ok)
+      ok = (attach ? DetourAttach(&push_constants, HookPushConstants) : DetourDetach(&push_constants, HookPushConstants)) == NO_ERROR;
+    if (ok)
+      ok = DetourTransactionCommit() == NO_ERROR;
+    else
+      DetourTransactionAbort();
+  } else
+    ok = false;
+  for (HANDLE thread : threads) CloseHandle(thread);
   return ok;
 }
 inline bool IsHostFunction(const void* address) {
   MEMORY_BASIC_INFORMATION info{};
-  return address && VirtualQuery(address,&info,sizeof(info))==sizeof(info)
-      && info.AllocationBase==reshade::internal::get_reshade_module_handle()
-      && info.State==MEM_COMMIT && !(info.Protect & (PAGE_GUARD | PAGE_NOACCESS))
-      && (info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
+  return address && VirtualQuery(address, &info, sizeof(info)) == sizeof(info)
+         && info.AllocationBase == reshade::internal::get_reshade_module_handle()
+         && info.State == MEM_COMMIT && !(info.Protect & (PAGE_GUARD | PAGE_NOACCESS))
+         && (info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY));
 }
 inline void OnInitDevice(device* dev) {
-  if(dev->get_api()!=device_api::vulkan || device_hooked) return;
-  // Stable ReShade API vtable slots, checked against the API's concrete test stubs.
-  // Both targets must belong to ReShade executable memory; never patch a game/driver vtable.
-  auto** table=*reinterpret_cast<void***>(dev);
-  if(!IsHostFunction(table[21]) || !IsHostFunction(table[24])) return;
-  create_pipeline=reinterpret_cast<CreatePipeline>(table[21]);
-  destroy_layout=reinterpret_cast<DestroyLayout>(table[24]);
-  device_hooked=ChangeHooks(true,true);
+  if (dev->get_api() != device_api::vulkan || device_hooked) return;
+
+  auto** table = *reinterpret_cast<void***>(dev);
+  if (!IsHostFunction(table[21]) || !IsHostFunction(table[24])) return;
+  create_pipeline = reinterpret_cast<CreatePipeline>(table[21]);
+  destroy_layout = reinterpret_cast<DestroyLayout>(table[24]);
+  device_hooked = ChangeHooks(true, true);
 }
 inline void OnInitCommandList(command_list* cmd) {
-  if(cmd->get_device()->get_api()!=device_api::vulkan || commands_hooked) return;
-  auto** table=*reinterpret_cast<void***>(cmd);
-  if(!IsHostFunction(table[12])) return;
-  push_constants=reinterpret_cast<PushConstants>(table[12]);
-  commands_hooked=ChangeHooks(true,false);
+  if (cmd->get_device()->get_api() != device_api::vulkan || commands_hooked) return;
+  auto** table = *reinterpret_cast<void***>(cmd);
+  if (!IsHostFunction(table[12])) return;
+  push_constants = reinterpret_cast<PushConstants>(table[12]);
+  commands_hooked = ChangeHooks(true, false);
 }
 inline void OnInitQueue(command_queue* queue) {
   if (queue->get_device()->get_api() != device_api::vulkan || commands_hooked) return;
@@ -164,16 +180,24 @@ inline void OnInitQueue(command_queue* queue) {
 }
 inline void OnDestroyDevice(device* dev) {
   std::lock_guard lock(mutex);
-  std::erase_if(layouts,[dev](const auto& item){return item.first.first==dev;});
-  std::erase_if(calibration_layouts,[dev](const auto& item){return item.first.first==dev;});
+  std::erase_if(layouts, [dev](const auto& item) { return item.first == dev; });
+  std::erase_if(calibration_layouts, [dev](const auto& item) { return item.first.first == dev; });
   calibrations.erase(dev);
-  if(latest_device==dev){timestamp=0;latest_device=nullptr;latest_layout=0;}
+  if (latest_device == dev) {
+    timestamp = 0;
+    latest_device = nullptr;
+    latest_layout = 0;
+  }
 }
 inline void Shutdown() {
-  if(commands_hooked && ChangeHooks(false,false)) commands_hooked=false;
-  if(device_hooked && ChangeHooks(false,true)) device_hooked=false;
+  if (commands_hooked && ChangeHooks(false, false)) commands_hooked = false;
+  if (device_hooked && ChangeHooks(false, true)) device_hooked = false;
   std::lock_guard lock(mutex);
-  calibration_layouts.clear();calibrations.clear();
-  layouts.clear();timestamp=0;latest_device=nullptr;latest_layout=0;
+  calibration_layouts.clear();
+  calibrations.clear();
+  layouts.clear();
+  timestamp = 0;
+  latest_device = nullptr;
+  latest_layout = 0;
 }
 }

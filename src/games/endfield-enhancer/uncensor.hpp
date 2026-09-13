@@ -17,7 +17,6 @@ using CameraMethod = void (*)(void*, enhancer::detail::MethodInfo*);
 inline CameraMethod process_pitch = nullptr;
 inline enhancer::detail::MethodInfo* clear_method = nullptr;
 
-// Verified GameAssembly build: see tests/uncensor_evidence.md.
 inline constexpr uint8_t kPitchEntry[] = {
     0x40, 0x53, 0x48, 0x81, 0xEC, 0x80, 0x00, 0x00, 0x00, 0x48,
     0x8B, 0xD9, 0x48, 0x8B, 0x0D, 0x3D, 0xCF, 0x40, 0x09};
@@ -36,7 +35,7 @@ inline bool ValidateTargets(const uint8_t* base, const void* pitch, const void* 
         || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64
         || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC
         || nt->FileHeader.TimeDateStamp != 0x6A870DA4
-        // Same camera code/metadata in CN; protection packaging is 4 KB larger.
+
         || (nt->OptionalHeader.SizeOfImage != 0xF7CB000
             && nt->OptionalHeader.SizeOfImage != 0xF7CC000)
         || pitch != base + 0x3BE6640 || clear != base + 0x3569AF0) return false;
@@ -62,14 +61,13 @@ inline bool ValidateTargets(const uint8_t* base, const void* pitch, const void* 
 
 inline void HookedProcessPitch(void* camera, enhancer::detail::MethodInfo* method) {
   process_pitch(camera, method);
-  // Clear on the game's camera thread, after its original update.
+
   if (camera != nullptr && (active.load(std::memory_order_relaxed) || force_body_visible.load(std::memory_order_relaxed))
       && !enhancer::detail::shutting_down.load(std::memory_order_relaxed)) {
     reinterpret_cast<CameraMethod>(clear_method->method_pointer)(camera, clear_method);
   }
 }
 
-// Detours must enlist the camera thread too: installation runs from Present.
 inline bool UpdateHook(bool attach) {
   if (DetourTransactionBegin() != NO_ERROR) return false;
   std::vector<HANDLE> threads;
@@ -86,7 +84,7 @@ inline bool UpdateHook(bool attach) {
                                      | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION,
                                  FALSE, entry.th32ThreadID);
       if (thread == nullptr) {
-        if (GetLastError() == ERROR_INVALID_PARAMETER) continue; // Thread exited.
+        if (GetLastError() == ERROR_INVALID_PARAMETER) continue;
         ready = false;
         break;
       }
@@ -94,7 +92,7 @@ inline bool UpdateHook(bool attach) {
     } while (Thread32Next(snapshot, &entry));
   }
   if (snapshot != INVALID_HANDLE_VALUE) CloseHandle(snapshot);
-  // Collect handles before suspension so vector growth cannot wait on a suspended allocator.
+
   if (ready) {
     for (HANDLE thread : threads) {
       if (DetourUpdateThread(thread) != NO_ERROR) {
@@ -103,8 +101,7 @@ inline bool UpdateHook(bool attach) {
       }
     }
   }
-  if (!ready || (attach ? DetourAttach(&process_pitch, HookedProcessPitch)
-                       : DetourDetach(&process_pitch, HookedProcessPitch)) != NO_ERROR) {
+  if (!ready || (attach ? DetourAttach(&process_pitch, HookedProcessPitch) : DetourDetach(&process_pitch, HookedProcessPitch)) != NO_ERROR) {
     DetourTransactionAbort();
     ready = false;
   } else {
@@ -123,10 +120,8 @@ inline void OnPresent() {
   Il2CppImage image = FindImage("Gameplay.Beyond.dll");
   if (image == nullptr) return;
   Il2CppClass camera = class_from_name(image, "Beyond.Gameplay.View", "CameraMono");
-  auto* pitch = camera == nullptr ? nullptr : static_cast<MethodInfo*>(
-      class_get_method_from_name(camera, "_ProcessDitherByPitch", 0));
-  auto* clear = camera == nullptr ? nullptr : static_cast<MethodInfo*>(
-      class_get_method_from_name(camera, "ForceClearDither", 0));
+  auto* pitch = camera == nullptr ? nullptr : static_cast<MethodInfo*>(class_get_method_from_name(camera, "_ProcessDitherByPitch", 0));
+  auto* clear = camera == nullptr ? nullptr : static_cast<MethodInfo*>(class_get_method_from_name(camera, "ForceClearDither", 0));
   if (pitch == nullptr || clear == nullptr
       || !ValidateTargets(reinterpret_cast<const uint8_t*>(GetModuleHandleW(L"GameAssembly.dll")),
                           pitch->method_pointer, clear->method_pointer)) {
@@ -141,7 +136,6 @@ inline void OnPresent() {
   if (UpdateHook(true)) {
     std::memcpy(installed_entry.data(), pitch_entry, installed_entry.size());
     installed = true;
-    Log(reshade::log::level::info, "Endfield enhancer: Uncensor camera hook installed.");
     return;
   }
   unavailable = true;
@@ -156,7 +150,7 @@ inline void Shutdown() {
   if (!installed) return;
   if (std::memcmp(pitch_entry, installed_entry.data(), installed_entry.size()) != 0) {
     enhancer::detail::Log(reshade::log::level::error,
-                         "Endfield enhancer: Uncensor entry changed; refusing to overwrite another patch.");
+                          "Endfield enhancer: Uncensor entry changed; refusing to overwrite another patch.");
     return;
   }
   if (UpdateHook(false)) {
@@ -165,4 +159,4 @@ inline void Shutdown() {
   }
   enhancer::detail::Log(reshade::log::level::error, "Endfield enhancer: Uncensor camera hook detach failed.");
 }
-}  // namespace endfield::uncensor
+}

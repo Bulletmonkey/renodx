@@ -1,4 +1,4 @@
-// Standalone Win32 behavior check; does not attach to or launch the game.
+
 #define NOMINMAX
 #include "./window_enhancements.hpp"
 #include <cstdio>
@@ -37,7 +37,7 @@ int main() {
   wc.lpszClassName = L"EndfieldWindowControlTest";
   if (!RegisterClassW(&wc)) return 1;
   HWND window = CreateWindowExW(0, wc.lpszClassName, L"Window control test",
-      WS_OVERLAPPEDWINDOW, 100, 100, 800, 600, nullptr, nullptr, wc.hInstance, nullptr);
+                                WS_OVERLAPPEDWINDOW, 100, 100, 800, 600, nullptr, nullptr, wc.hInstance, nullptr);
   if (!window) return 2;
   audio_overlay_state state;
   state.game_window = window;
@@ -56,7 +56,10 @@ int main() {
     if (!EqualRect(&actual, &monitor.rcMonitor) || (GetWindowLongPtrW(window, GWL_STYLE) & WS_CAPTION)) ++failures;
     toggle_fullscreen(state);
     GetWindowRect(window, &actual);
-    if (!EqualRect(&actual, &original) || GetWindowLongPtrW(window, GWL_STYLE) != original_style) { ++failures; std::printf("restore: %ld,%ld,%ld,%ld expected %ld,%ld,%ld,%ld style %llx expected %llx\n", actual.left,actual.top,actual.right,actual.bottom,original.left,original.top,original.right,original.bottom, GetWindowLongPtrW(window,GWL_STYLE),original_style); }
+    if (!EqualRect(&actual, &original) || GetWindowLongPtrW(window, GWL_STYLE) != original_style) {
+      ++failures;
+      std::printf("restore: %ld,%ld,%ld,%ld expected %ld,%ld,%ld,%ld style %llx expected %llx\n", actual.left, actual.top, actual.right, actual.bottom, original.left, original.top, original.right, original.bottom, GetWindowLongPtrW(window, GWL_STYLE), original_style);
+    }
   }
   if (!enable_native_resize(window)) ++failures;
   record_resize = true;
@@ -87,13 +90,15 @@ int main() {
       || native_resize_hit_test(window, MAKELPARAM(bounds.right - 1, bounds.bottom - 1)) != HTBOTTOMRIGHT) ++failures;
   cursor_guard::enabled.store(true);
   cursor_guard::window.store(window);
-  // Hiding/locking the cursor, then deactivating, must release it without losing
-  // the game's original display-count balance when focus returns.
+
   SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)));
   SendMessageW(window, WM_ACTIVATEAPP, TRUE, 0);
   int hides = 0;
   int hidden_count;
-  do { hidden_count = ShowCursor(FALSE); ++hides; } while (hidden_count >= 0);
+  do {
+    hidden_count = ShowCursor(FALSE);
+    ++hides;
+  } while (hidden_count >= 0);
   ClipCursor(&original);
   SendMessageW(window, WM_ACTIVATEAPP, FALSE, 0);
   const int visible_count = ShowCursor(TRUE) - 1;
@@ -113,9 +118,8 @@ int main() {
   const int restored_count = ShowCursor(TRUE) - 1;
   ShowCursor(FALSE);
   if (restored_count != hidden_count - 1 || cursor_guard::virtual_count_active) ++failures;
-  ShowCursor(TRUE); // Balance the game's simulated background hide.
-  // A menu can request visibility while our resize cursor is shown. Restoring
-  // a frozen pre-override count would incorrectly hide that menu's cursor.
+  ShowCursor(TRUE);
+
   for (int shape : {32644, 32645, 32642, 32643}) {
     SetCursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32514)));
     const HCURSOR game_cursor = GetCursor();
@@ -135,23 +139,22 @@ int main() {
     cursor_guard::SetCursorPosHook(before.x + 100, before.y + 100);
     GetCursorPos(&after);
     if (before.x != after.x || before.y != after.y) ++failures;
-    cursor_guard::ShowCursorHook(TRUE); // Game opens a menu and shows its cursor.
+    cursor_guard::ShowCursorHook(TRUE);
     cursor_guard::End();
     restore_cursor_visibility();
     const int menu_count = ShowCursor(TRUE) - 1;
     ShowCursor(FALSE);
     if (menu_count != hidden_count + 1 || GetCursor() != game_cursor) ++failures;
-    ShowCursor(FALSE); // Balance the simulated menu show.
+    ShowCursor(FALSE);
   }
   while (hides-- > 0) ShowCursor(TRUE);
-  // Unhooked users (including Windows' modal resize loop) can temporarily
-  // change the real count. Ending our override must preserve their changes.
+
   for (int native_delta : {-1, 1}) {
     const int baseline = ShowCursor(TRUE) - 1;
     ShowCursor(FALSE);
     cursor_guard::Begin(LoadCursorW(nullptr, MAKEINTRESOURCEW(32644)));
     ShowCursor(native_delta > 0);
-    cursor_guard::ShowCursorHook(TRUE); // A Unity menu opens during resizing.
+    cursor_guard::ShowCursorHook(TRUE);
     cursor_guard::End();
     const int actual = ShowCursor(TRUE) - 1;
     ShowCursor(FALSE);
@@ -159,21 +162,20 @@ int main() {
       ++failures;
       std::printf("native cursor delta lost: %d expected %d\n", actual, baseline + native_delta + 1);
     }
-    ShowCursor(native_delta < 0); // Native caller balances its own adjustment.
-    ShowCursor(FALSE); // Unity balances the menu show.
-    // Keep other tests independent when testing a broken implementation.
+    ShowCursor(native_delta < 0);
+    ShowCursor(FALSE);
+
     int balanced = ShowCursor(TRUE);
     while (balanced > baseline) balanced = ShowCursor(FALSE);
     while (balanced < baseline) balanced = ShowCursor(TRUE);
   }
-  // A focused client must terminate even a stale override, without waiting for
-  // WM_SETCURSOR. Exercise the pass-through path with an active virtual count.
+
   if (cursor_guard::ShouldOverride(true, false, true)
       || cursor_guard::ShouldOverride(true, true, false)
       || !cursor_guard::ShouldOverride(true, true, true)
       || !cursor_guard::ShouldOverride(false, false, false)) ++failures;
   show_temporary_cursor(LoadCursorW(nullptr, MAKEINTRESOURCEW(32644)));
-  cursor_guard::window.store(nullptr); // Force the native/pass-through decision.
+  cursor_guard::window.store(nullptr);
   const int expected_show = cursor_guard::requested_count + 1;
   if (cursor_guard::ShowCursorHook(TRUE) != expected_show || cursor_guard::virtual_count_active) ++failures;
   cursor_guard::ShowCursorHook(FALSE);
@@ -193,7 +195,7 @@ int main() {
   cursor_guard::set_cursor_pos = original_position;
   cursor_guard::window.store(window);
   restore_cursor_visibility();
-  // Atomic IAT changes preserve page protection and reject another owner's slot.
+
   auto* slot_memory = static_cast<void**>(VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
   if (!slot_memory) return 6;
   *slot_memory = reinterpret_cast<void*>(0x1000);
@@ -212,23 +214,22 @@ int main() {
     for (size_t i = 0; i < 4; ++i) {
       slot_memory[i] = reinterpret_cast<void*>(0x1000);
       transaction[i] = {"test", reinterpret_cast<void*>(0x2000), &slot_memory[i],
-          reinterpret_cast<void*>(i == failure ? 0x3000 : 0x1000)};
+                        reinterpret_cast<void*>(i == failure ? 0x3000 : 0x1000)};
     }
     VirtualProtect(slot_memory, 4096, PAGE_READONLY, &old_protection);
     size_t applied = 0;
     while (applied < 4 && cursor_guard::Replace(transaction[applied], true)) ++applied;
     if (applied != failure) ++failures;
-    while (applied) if (!cursor_guard::Replace(transaction[--applied], false)) ++failures;
+    while (applied)
+      if (!cursor_guard::Replace(transaction[--applied], false)) ++failures;
     for (void* value : {slot_memory[0], slot_memory[1], slot_memory[2], slot_memory[3]})
       if (value != reinterpret_cast<void*>(0x1000)) ++failures;
   }
   VirtualFree(slot_memory, 0, MEM_RELEASE);
   disable_native_resize();
   if (reinterpret_cast<WNDPROC>(GetWindowLongPtrW(window, GWLP_WNDPROC)) != TestWindowProc) ++failures;
-  // Install from a worker while the owning thread pumps its messages.
-  HANDLE installer = CreateThread(nullptr, 0, [](void* value) -> DWORD {
-    return enable_native_resize(static_cast<HWND>(value)) ? 0 : 1;
-  }, window, 0, nullptr);
+
+  HANDLE installer = CreateThread(nullptr, 0, [](void* value) -> DWORD { return enable_native_resize(static_cast<HWND>(value)) ? 0 : 1; }, window, 0, nullptr);
   if (!installer) return 4;
   while (MsgWaitForMultipleObjects(1, &installer, FALSE, 3000, QS_ALLINPUT) == WAIT_OBJECT_0 + 1) {
     MSG message{};
@@ -242,7 +243,7 @@ int main() {
   CloseHandle(installer);
   if (installed != 0) return 5;
   foreign_previous = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&ForeignWindowProc)));
-  // Repeated swapchain notifications must not replace another module's hook.
+
   for (int i = 0; i < 5; ++i) {
     if (!enable_native_resize(window)) ++failures;
     SetWindowLongPtrW(window, GWL_STYLE, WS_POPUP | WS_CAPTION | WS_SYSMENU);
@@ -258,18 +259,18 @@ int main() {
   SendMessageW(window, WM_NULL, 0, 0);
   if (maximum_foreign_depth > 2) ++failures;
   SetWindowLongPtrW(window, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&TestWindowProc));
-  // Starting borderless still needs a usable route into a window.
+
   state.saved_window = false;
   SetWindowLongPtrW(window, GWL_STYLE, WS_POPUP);
   toggle_fullscreen(state);
   if ((GetWindowLongPtrW(window, GWL_STYLE) & WS_CAPTION) != WS_CAPTION) ++failures;
-  // Compact and high-DPI layouts must keep the three hit regions separate.
+
   for (UINT dpi : {96u, 144u, 192u}) {
     state.dpi = dpi;
     SetWindowLongPtrW(window, GWL_STYLE, WS_POPUP);
     SetWindowPos(window, nullptr, 0, 0,
-        scale_for_dpi(k_minimum_overlay_width_dip, dpi), scale_for_dpi(k_overlay_height_dip, dpi),
-        SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+                 scale_for_dpi(k_minimum_overlay_width_dip, dpi), scale_for_dpi(k_overlay_height_dip, dpi),
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     const RECT mute = get_button_rect(state);
     const RECT slider = get_slider_rect(state);
     const RECT fullscreen = get_fullscreen_rect(state);

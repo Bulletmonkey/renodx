@@ -29,7 +29,7 @@ inline float first_person_dialogue = 0.f;
 inline float animation_facing = 0.f;
 inline float animation_motion = 35.f;
 inline bool unavailable = false;
-inline float hide_head=0.f, fill_neck_hole=0.f;
+inline float hide_head = 0.f, fill_neck_hole = 0.f;
 inline std::atomic_int status = 0;
 
 namespace detail {
@@ -89,7 +89,6 @@ inline void* Invoke(Il2CppMethod method, void* object, void** args = nullptr) {
 inline uint32_t FindHead(void* go);
 #include "./camera_dialogue.hpp"
 
-// Called only by native camera callbacks on the game thread. No cached unrooted objects.
 inline void* Context(const Values& v, void** manager = nullptr) {
   if (!v.enabled || shutting_down.load(std::memory_order_relaxed)) return nullptr;
   void* instance = nullptr;
@@ -103,7 +102,9 @@ inline void* Context(const Values& v, void** manager = nullptr) {
         || (v.gameplay && v.first_person && v.first_person_dialogue && dialogue::Eligible(controller)))) return nullptr;
   return controller;
 }
-namespace motion { inline void Reset(); }
+namespace motion {
+inline void Reset();
+}
 inline void ReleaseHead() {
   motion::Reset();
   if (head_root) gc_free(head_root);
@@ -115,7 +116,10 @@ inline void* Head(void* controller) {
   void* character = dialogue::Character(controller);
   void* model = character ? Invoke(model_method, character) : nullptr;
   void* go = model ? Invoke(model_go_method, model) : nullptr;
-  if (!go) { ReleaseHead(); return nullptr; }
+  if (!go) {
+    ReleaseHead();
+    return nullptr;
+  }
   if (model_root && gc_target(model_root) == go) {
     if (head_root) return gc_target(head_root);
     if (++retry_head < 120) return nullptr;
@@ -128,12 +132,13 @@ inline void* Head(void* controller) {
 }
 inline uint32_t FindHead(void* go) {
   uint32_t found = 0;
-  // Prefer the operator's exact rig path. Attached skill actors can also have
-  // head bones, and the recursive fallback visits later attachments first.
+
   if (void* transform = Invoke(transform_method, go)) {
     const uint32_t transform_root = gc_new(transform, false);
     const uint32_t path_root = head_path_string ? gc_new(head_path_string(
-        "Root/Bip001/Bip001_Pelvis/Bip001_Spine/Bip001_Spine1/Bip001_Spine2/Bip001_Neck/Bip001_Head"), false) : 0;
+                                                             "Root/Bip001/Bip001_Pelvis/Bip001_Spine/Bip001_Spine1/Bip001_Spine2/Bip001_Neck/Bip001_Head"),
+                                                         false)
+                                                : 0;
     if (transform_root && path_root) {
       void* args[]{gc_target(path_root)};
       if (void* head = Invoke(head_path_method, gc_target(transform_root), args)) found = gc_new(head, false);
@@ -142,7 +147,7 @@ inline uint32_t FindHead(void* go) {
     if (transform_root) gc_free(transform_root);
     if (found) return found;
   }
-  // Alternate/NPC rigs retain the bounded hierarchy search.
+
   std::vector<uint32_t> pending;
   if (void* transform = Invoke(transform_method, go)) pending.push_back(gc_new(transform, false));
   unsigned visited = 0;
@@ -172,7 +177,8 @@ inline uint32_t FindHead(void* go) {
     }
     if (root) gc_free(root);
   }
-  for (uint32_t root : pending) if (root) gc_free(root);
+  for (uint32_t root : pending)
+    if (root) gc_free(root);
   return found;
 }
 
@@ -189,7 +195,9 @@ inline void Write(void* state, size_t offset, T value) {
 
 #include "./camera_mesh_runtime.hpp"
 #include "./camera_movement.hpp"
-namespace freecam { inline void Maintain(); }
+namespace freecam {
+inline void Maintain();
+}
 #include "./camera_motion.hpp"
 #include "./camera_free.hpp"
 
@@ -199,8 +207,6 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   void* controller = Context(v, &manager);
   freecam::Maintain();
   if (!controller) {
-    // Retain the incoming view while this interaction is preparing.
-    // Switching to any other unsupported camera invalidates it immediately.
     void* pending = manager ? Invoke(controller_method, manager) : nullptr;
     if (!pending || object_class(pending) != dialogue::controller_class
         || !v.first_person || !v.first_person_dialogue)
@@ -217,8 +223,7 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
     push_state(brain, state, method);
     return;
   }
-  // The verified by-value CameraState is 0x120 bytes. Modify a call-local copy,
-  // never the virtual camera's persistent state, so offsets cannot accumulate.
+
   alignas(16) std::array<uint8_t, 0x120> copy;
   std::memcpy(copy.data(), state, copy.size());
   Vec3 position = Read<Vec3>(state, 0x80);
@@ -240,15 +245,12 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   }
   if (freecam::Apply(brain, state, method)) return;
   const bool native_photo_first_person = v.first_person && object_class(controller) == photo_class
-      && Read<bool>(controller, native_first_person);
+                                         && Read<bool>(controller, native_first_person);
   void* first_person_head = v.first_person && !native_photo_first_person ? Head(controller) : nullptr;
   Vec3 eyes{};
   if (first_person_head) position_injected(first_person_head, &eyes);
   const bool valid_first_person = first_person_head && Finite(eyes);
   if (conversation && !valid_first_person) {
-    dialogue::Report("eligible chat, but the player head position is unavailable");
-    // A replacement actor's hierarchy can be unavailable while loading. Keep
-    // the saved view so eligibility and head lookup can recover next frame.
     movement::Release();
     mesh_runtime::UpdateBinding(false);
     ReleaseHead();
@@ -258,11 +260,12 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   }
   orientation = AxisAngle({0, 1, 0}, v.yaw) * orientation;
   const float extra_pitch = valid_first_person
-      ? ExpandLookPitch(orientation * rotation_correction, v.look_up_range, v.look_down_range) : 0.f;
+                                ? ExpandLookPitch(orientation * rotation_correction, v.look_up_range, v.look_down_range)
+                                : 0.f;
   Quat adjusted_correction = rotation_correction * AxisAngle({1, 0, 0}, v.pitch + extra_pitch);
   const bool restored_dialogue_view = !conversation && valid_first_person && v.first_person_dialogue
-      && (object_class(controller) == level_class || object_class(controller) == free_class)
-      && dialogue::HoldExitView(controller, brain, v.pitch, v.look_up_range, v.look_down_range);
+                                      && (object_class(controller) == level_class || object_class(controller) == free_class)
+                                      && dialogue::HoldExitView(controller, brain, v.pitch, v.look_up_range, v.look_down_range);
   if (conversation || restored_dialogue_view) {
     orientation = conversation && dialogue::focus_started ? dialogue::focus_view : dialogue::saved_view;
     adjusted_correction = {0, 0, 0, 1};
@@ -275,7 +278,6 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   Vec3 forward = Rotate(view, {0, 0, 1});
   bool first_person_active = false;
   if (v.first_person) {
-    // Native photo first person hides the entire model; leave it under game control.
     if (native_photo_first_person) {
       status.store(4, std::memory_order_relaxed);
     } else if (first_person_head) {
@@ -284,14 +286,12 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
         const Vec3 planar = length > 0.001f ? Vec3{forward.x / length, 0, forward.z / length} : Vec3{0, 0, 1};
         position = eyes + Vec3{-correction.x, v.eye_height - correction.y, -correction.z}
                    + planar * v.eye_forward;
-        Write(copy.data(), 0x28, 0.03f); // Lens.NearClipPlane
+        Write(copy.data(), 0x28, 0.03f);
         first_person_active = true;
-        if(v.hide_head){
+        if (v.hide_head) {
           mesh_runtime::Start(v.fill_neck_hole);
-          // Complete this character before the camera state is submitted.
-          // Cached models have no readback/clone work here. A cold model may
-          // stall once, but cannot spend multiple rendered frames half-hidden.
-          while(!mesh_runtime::candidates.empty())mesh_runtime::PollOne();
+
+          while (!mesh_runtime::candidates.empty()) mesh_runtime::PollOne();
         }
         status.store(2, std::memory_order_relaxed);
       }
@@ -306,21 +306,19 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
                        && object_class(controller) != photo_class,
                    forward, v.side_look_limit);
   if (first_person_active && !conversation && !restored_dialogue_view
-      && (object_class(controller)==level_class || object_class(controller)==free_class)
-      && motion::AlignInteraction(controller,&view)) {
+      && (object_class(controller) == level_class || object_class(controller) == free_class)
+      && motion::AlignInteraction(controller, &view)) {
     orientation = view;
-    adjusted_correction = {0,0,0,1};
-    right = Rotate(view,{1,0,0});
-    forward = Rotate(view,{0,0,1});
+    adjusted_correction = {0, 0, 0, 1};
+    right = Rotate(view, {1, 0, 0});
+    forward = Rotate(view, {0, 0, 1});
   }
   if (first_person_active) {
-    // Visual facing can move the animated head around the model pivot. Anchor
-    // the submitted camera to its updated position in this same frame.
     position_injected(first_person_head, &eyes);
     if (Finite(eyes)) {
       const float length = std::hypot(forward.x, forward.z);
-      const Vec3 planar = length > .001f ? Vec3{forward.x/length, 0, forward.z/length} : Vec3{0, 0, 1};
-      position = eyes + Vec3{-correction.x, v.eye_height-correction.y, -correction.z} + planar*v.eye_forward;
+      const Vec3 planar = length > .001f ? Vec3{forward.x / length, 0, forward.z / length} : Vec3{0, 0, 1};
+      position = eyes + Vec3{-correction.x, v.eye_height - correction.y, -correction.z} + planar * v.eye_forward;
     }
   }
   mesh_runtime::UpdateBinding(first_person_active && v.hide_head);
@@ -338,7 +336,7 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   Write(copy.data(), 0x20, first_person_active ? v.first_person_fov : v.fov);
   if (!conversation && !restored_dialogue_view) {
     dialogue::have_view = first_person_active && v.first_person_dialogue
-        && (object_class(controller) == level_class || object_class(controller) == free_class);
+                          && (object_class(controller) == level_class || object_class(controller) == free_class);
     if (dialogue::have_view) {
       dialogue::saved_view = view;
       dialogue::CaptureAngles(controller);
@@ -348,7 +346,7 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   }
   push_state(brain, copy.data(), method);
   motion::Capture(brain, first_person_active, conversation || restored_dialogue_view,
-                  view * AxisAngle({0,0,1},Read<float>(copy.data(),0x30)));
+                  view * AxisAngle({0, 0, 1}, Read<float>(copy.data(), 0x30)));
   if (motion::camera_root) motion::Apply(gc_target(motion::camera_root));
 }
 inline float HookedParamMax(void* param, MethodInfo* method) {
@@ -357,7 +355,8 @@ inline float HookedParamMax(void* param, MethodInfo* method) {
   void* controller = Context(v);
   return controller && Read<void*>(param, param_controller) == controller
                  && std::isfinite(original) && original > 0.f
-             ? original * v.zoom_limit : original;
+             ? original * v.zoom_limit
+             : original;
 }
 inline float HookedBodyMax(void* body, MethodInfo* method) {
   const float original = body_max(body, method);
@@ -371,25 +370,35 @@ inline bool UpdateHooks(bool attach) {
   THREADENTRY32 entry{sizeof(entry)};
   bool ready = snapshot != INVALID_HANDLE_VALUE && Thread32First(snapshot, &entry);
   if (ready) do {
-    if (entry.th32OwnerProcessID != GetCurrentProcessId() || entry.th32ThreadID == GetCurrentThreadId()) continue;
-    HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION,
-                               FALSE, entry.th32ThreadID);
-    if (!thread) { if (GetLastError() == ERROR_INVALID_PARAMETER) continue; ready = false; break; }
-    threads.push_back(thread);
-  } while (Thread32Next(snapshot, &entry));
+      if (entry.th32OwnerProcessID != GetCurrentProcessId() || entry.th32ThreadID == GetCurrentThreadId()) continue;
+      HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION,
+                                 FALSE, entry.th32ThreadID);
+      if (!thread) {
+        if (GetLastError() == ERROR_INVALID_PARAMETER) continue;
+        ready = false;
+        break;
+      }
+      threads.push_back(thread);
+    } while (Thread32Next(snapshot, &entry));
   if (snapshot != INVALID_HANDLE_VALUE) CloseHandle(snapshot);
   if (ready) {
     ready = DetourTransactionBegin() == NO_ERROR;
     if (ready) {
-      for (HANDLE thread : threads) if (DetourUpdateThread(thread) != NO_ERROR) { ready = false; break; }
+      for (HANDLE thread : threads)
+        if (DetourUpdateThread(thread) != NO_ERROR) {
+          ready = false;
+          break;
+        }
       if (ready) ready = (attach ? DetourAttach(&push_state, HookedPush) : DetourDetach(&push_state, HookedPush)) == NO_ERROR
                          && (attach ? DetourAttach(&param_max, HookedParamMax) : DetourDetach(&param_max, HookedParamMax)) == NO_ERROR
                          && (attach ? DetourAttach(&body_max, HookedBodyMax) : DetourDetach(&body_max, HookedBodyMax)) == NO_ERROR
                          && (attach ? DetourAttach(&motion::tail_tick, motion::HookedTailTick) : DetourDetach(&motion::tail_tick, motion::HookedTailTick)) == NO_ERROR
                          && (attach ? DetourAttach(&motion::input_tick, motion::HookedInputTick) : DetourDetach(&motion::input_tick, motion::HookedInputTick)) == NO_ERROR
                          && (attach ? DetourAttach(&mesh_runtime::native_awake, mesh_runtime::HookedMeshAwake) : DetourDetach(&mesh_runtime::native_awake, mesh_runtime::HookedMeshAwake)) == NO_ERROR;
-      if (ready) ready = DetourTransactionCommit() == NO_ERROR;
-      else DetourTransactionAbort();
+      if (ready)
+        ready = DetourTransactionCommit() == NO_ERROR;
+      else
+        DetourTransactionAbort();
     }
   }
   for (HANDLE thread : threads) CloseHandle(thread);
@@ -425,9 +434,8 @@ inline bool Resolve() {
   const auto unity = FindImage("UnityEngine.CoreModule.dll");
   if (!game || !cine || !unity || !position_injected) return false;
   dialogue::available = dialogue::Resolve(game, field_flags, class_from_type, return_type);
-  Log(reshade::log::level::info, dialogue::available
-      ? "Endfield enhancer: first-person conversation API resolved"
-      : "Endfield enhancer: first-person conversation API resolution failed");
+  if (!dialogue::available)
+    Log(reshade::log::level::warning, "Endfield enhancer: first-person conversation API resolution failed");
   auto state_class = class_from_name(cine, "Cinemachine", "CameraState");
   auto lens_class = class_from_name(cine, "Cinemachine", "LensSettings");
   auto param_class = class_from_name(game, "Beyond.Gameplay.View", "CameraControlParam");
@@ -438,15 +446,12 @@ inline bool Resolve() {
   if (!state_class || !lens_class || !param_class || !instance_class || !photo_class || !level_class || !free_class) return false;
   uint32_t alignment = 0;
   if (value_size(state_class, &alignment) != 0x120) return false;
-  // il2cpp_field_get_offset includes the boxed object's 16-byte header for value types.
-  for (const auto& field : std::array<std::pair<const char*, size_t>, 5>{{
-           {"Lens", 0x30}, {"RawPosition", 0x90}, {"RawOrientation", 0x9c},
-           {"PositionCorrection", 0xbc}, {"OrientationCorrection", 0xc8}}}) {
+
+  for (const auto& field : std::array<std::pair<const char*, size_t>, 5>{{{"Lens", 0x30}, {"RawPosition", 0x90}, {"RawOrientation", 0x9c}, {"PositionCorrection", 0xbc}, {"OrientationCorrection", 0xc8}}}) {
     void* info = class_get_field_from_name(state_class, field.first);
     if (!info || field_get_offset(info) != field.second) return false;
   }
-  for (const auto& field : std::array<std::pair<const char*, size_t>, 3>{{
-           {"FieldOfView", 0x10}, {"NearClipPlane", 0x18}, {"Dutch", 0x20}}}) {
+  for (const auto& field : std::array<std::pair<const char*, size_t>, 3>{{{"FieldOfView", 0x10}, {"NearClipPlane", 0x18}, {"Dutch", 0x20}}}) {
     void* info = class_get_field_from_name(lens_class, field.first);
     if (!info || field_get_offset(info) != field.second) return false;
   }
@@ -481,20 +486,19 @@ inline bool Resolve() {
   auto* input_tick = static_cast<MethodInfo*>(FindMethod(game, "Beyond.Gameplay.View", "CameraManager", "Tick", 1));
   const void* (*parameter_type)(Il2CppMethod, uint32_t) = nullptr;
   if (!ResolveExport(module, "il2cpp_method_get_param", &parameter_type)) return false;
-  for (auto* tick : {tail_tick,input_tick})
-    if (!tick || (method_flags(tick,nullptr) & 0x10)
-        || class_from_type(parameter_type(tick,0)) != class_from_name(FindImage("mscorlib.dll"),"System","Single")
-        || class_from_type(return_type(tick)) != class_from_name(FindImage("mscorlib.dll"),"System","Void")) return false;
+  for (auto* tick : {tail_tick, input_tick})
+    if (!tick || (method_flags(tick, nullptr) & 0x10)
+        || class_from_type(parameter_type(tick, 0)) != class_from_name(FindImage("mscorlib.dll"), "System", "Single")
+        || class_from_type(return_type(tick)) != class_from_name(FindImage("mscorlib.dll"), "System", "Void")) return false;
   entries = {push->method_pointer, max->method_pointer, body->method_pointer, tail_tick->method_pointer, input_tick->method_pointer};
   constexpr std::array<size_t, 5> rvas{0x3224f20, 0x35c85c0, 0x5ee8264, 0x3d7a970, 0x3222180};
-  constexpr std::array<std::array<uint8_t, 32>, 5> signatures{{
-      {0x40,0x55,0x53,0x57,0x48,0x8d,0xac,0x24,0x70,0xff,0xff,0xff,0x48,0x81,0xec,0x90},
-      {0x40,0x57,0x48,0x83,0xec,0x30,0x48,0x8b,0xf9,0x48,0x8b,0x0d,0xc0,0xaf,0xa2,0x09},
-      {0x40,0x53,0x48,0x83,0xec,0x20,0x80,0x3d,0x37,0x75,0xfd,0x07,0x00,0x48,0x8b,0xd9},
-      {0x40,0x53,0x48,0x83,0xec,0x30,0x48,0x8b,0xd9,0x0f,0x29,0x74,0x24,0x20,0x48,0x8b,
-       0x0d,0x0b,0x8c,0x27,0x09,0x0f,0x28,0xf1,0x83,0xb9,0xe0,0x00,0x00,0x00,0x00,0x74},
-      {0x40,0x57,0x48,0x83,0xec,0x30,0x48,0x8b,0xf9,0x0f,0x29,0x74,0x24,0x20,0x48,0x8b,
-       0x0d,0xfb,0x13,0xdd,0x09,0x0f,0x28,0xf1,0x83,0xb9,0xe0,0x00,0x00,0x00,0x00,0x0f}}};
+  constexpr std::array<std::array<uint8_t, 32>, 5> signatures{{{0x40, 0x55, 0x53, 0x57, 0x48, 0x8d, 0xac, 0x24, 0x70, 0xff, 0xff, 0xff, 0x48, 0x81, 0xec, 0x90},
+                                                               {0x40, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0xf9, 0x48, 0x8b, 0x0d, 0xc0, 0xaf, 0xa2, 0x09},
+                                                               {0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x80, 0x3d, 0x37, 0x75, 0xfd, 0x07, 0x00, 0x48, 0x8b, 0xd9},
+                                                               {0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0xd9, 0x0f, 0x29, 0x74, 0x24, 0x20, 0x48, 0x8b,
+                                                                0x0d, 0x0b, 0x8c, 0x27, 0x09, 0x0f, 0x28, 0xf1, 0x83, 0xb9, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x74},
+                                                               {0x40, 0x57, 0x48, 0x83, 0xec, 0x30, 0x48, 0x8b, 0xf9, 0x0f, 0x29, 0x74, 0x24, 0x20, 0x48, 0x8b,
+                                                                0x0d, 0xfb, 0x13, 0xdd, 0x09, 0x0f, 0x28, 0xf1, 0x83, 0xb9, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x0f}}};
   const auto* base = reinterpret_cast<const uint8_t*>(module);
   const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
   const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
@@ -507,16 +511,15 @@ inline bool Resolve() {
       if (!(sections[j].Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
       const auto* begin = base + sections[j].VirtualAddress;
       const auto* end = begin + sections[j].Misc.VirtualSize;
-      for (const auto* at = begin; (at = std::search(at, end, signatures[i].begin(), signatures[i].begin()+signature_size)) != end; ++at) ++matches;
+      for (const auto* at = begin; (at = std::search(at, end, signatures[i].begin(), signatures[i].begin() + signature_size)) != end; ++at) ++matches;
     }
     if (matches != 1) return false;
   }
   if (!movement::Resolve(game, value_size, class_from_type)) return false;
   if (!motion::Resolve(unity, cine, icall)) return false;
   freecam::available.store(freecam::Resolve(game, value_size, class_from_type, return_type, method_flags));
-  Log(reshade::log::level::info, freecam::available.load()
-      ? "Endfield enhancer: free camera input API resolved"
-      : "Endfield enhancer: free camera input API unsupported; free camera disabled");
+  if (!freecam::available.load())
+    Log(reshade::log::level::warning, "Endfield enhancer: free camera input API unsupported; free camera disabled");
   if (!mesh_runtime::ResolveCloneAwake(icall)) return false;
   entries[5] = reinterpret_cast<void*>(mesh_runtime::native_awake);
   motion::tail_tick = reinterpret_cast<motion::CameraTick>(entries[3]);
@@ -526,27 +529,27 @@ inline bool Resolve() {
   body_max = reinterpret_cast<GetFloat>(entries[2]);
   return true;
 }
-}  // namespace detail
+}
 
 inline void OnPresent() {
   using namespace detail;
   const auto clamp = [](float value, float low, float high, float fallback = 0.f) {
     return std::isfinite(value) ? std::clamp(value, low, high) : fallback;
   };
-  // Retire the previous zero = native FOV sentinel when loading older settings.
-  fov = fov >= 20.f ? clamp(fov,20,120,60) : 60.f;
+
+  fov = fov >= 20.f ? clamp(fov, 20, 120, 60) : 60.f;
   AcquireSRWLockExclusive(&values_lock);
   values = {enabled >= 0.5f && !unavailable, gameplay >= 0.5f, photo >= 0.5f, first_person >= 0.5f, hide_head >= 0.5f, fill_neck_hole >= 0.5f,
-            clamp(height,-10,10), clamp(horizontal,-10,10), clamp(distance,-10,50),
-            clamp(pitch,-89,89), clamp(yaw,-180,180), clamp(roll,-180,180),
-            fov, clamp(zoom_limit,1,5,1),
-            clamp(eye_height,-0.5f,0.5f,0.05f), clamp(eye_forward,0,0.5f,0.03f),
+            clamp(height, -10, 10), clamp(horizontal, -10, 10), clamp(distance, -10, 50),
+            clamp(pitch, -89, 89), clamp(yaw, -180, 180), clamp(roll, -180, 180),
+            fov, clamp(zoom_limit, 1, 5, 1),
+            clamp(eye_height, -0.5f, 0.5f, 0.05f), clamp(eye_forward, 0, 0.5f, 0.03f),
             extend_look_range >= 0.5f ? 1.10f : 1.f, extend_look_range >= 0.5f ? 1.50f : 1.f,
-            clamp(first_person_fov,20,120,60), first_person_movement >= 0.5f,
-            clamp(side_look_limit,0,90,60), first_person_dialogue >= .5f,
+            clamp(first_person_fov, 20, 120, 60), first_person_movement >= 0.5f,
+            clamp(side_look_limit, 0, 90, 60), first_person_dialogue >= .5f,
             animation_facing >= .5f && animation_facing < 1.5f,
             animation_facing >= 1.5f && animation_facing < 2.5f,
-            animation_facing >= 2.5f, clamp(animation_motion,0,100,35)*.01f};
+            animation_facing >= 2.5f, clamp(animation_motion, 0, 100, 35) * .01f};
   ReleaseSRWLockExclusive(&values_lock);
   if (installed || unavailable || enabled < 0.5f || shutting_down.load(std::memory_order_relaxed)) return;
   if (present_count != 1 && present_count % 120 != 0) return;
@@ -567,7 +570,8 @@ inline void Shutdown() {
   using namespace detail;
   freecam::requested.store(false);
   freecam::StopMouse();
-  if (movement::game_thread.load() == GetCurrentThreadId()) freecam::Release();
+  if (movement::game_thread.load() == GetCurrentThreadId())
+    freecam::Release();
   else if (freecam::active.load())
     Log(reshade::log::level::warning, "Endfield enhancer: disable free camera before hot-unloading on another thread");
   AcquireSRWLockExclusive(&values_lock);
@@ -575,10 +579,9 @@ inline void Shutdown() {
   ReleaseSRWLockExclusive(&values_lock);
   uncensor::force_body_visible.store(false, std::memory_order_relaxed);
   if (!installed) return;
-  // Unity controller setters must run on the camera's game thread. Normal
-  // toggle-off cleanup happens there; process teardown must not call them from
-  // an arbitrary loader thread. Main-thread unload can restore immediately.
-  if (movement::game_thread.load() == GetCurrentThreadId()) movement::Release();
+
+  if (movement::game_thread.load() == GetCurrentThreadId())
+    movement::Release();
   else if (movement::attached)
     Log(reshade::log::level::warning, "Endfield enhancer: off-thread unload with first-person facing active; disable Camera Controls before hot-unloading.");
   for (size_t i = 0; i < entries.size(); ++i) {
@@ -587,7 +590,11 @@ inline void Shutdown() {
       return;
     }
   }
-  if (UpdateHooks(false)) { installed = false; ReleaseHead(); dialogue::ResetView(); }
-  else Log(reshade::log::level::error, "Endfield enhancer: Camera hook detach failed.");
+  if (UpdateHooks(false)) {
+    installed = false;
+    ReleaseHead();
+    dialogue::ResetView();
+  } else
+    Log(reshade::log::level::error, "Endfield enhancer: Camera hook detach failed.");
 }
-}  // namespace endfield::camera
+}
