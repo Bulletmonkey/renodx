@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstring>
 #include <iterator>
+#include "./game_build.hpp"
 
 namespace endfield::cursor_guard {
 inline decltype(&SetCursor) set_cursor = &SetCursor;
@@ -151,8 +152,8 @@ inline bool Install(HWND target) {
     return true;
   }
   HMODULE unity = GetModuleHandleW(L"UnityPlayer.dll");
-  if (!MatchesBuild(GetModuleHandleW(nullptr), 0x6A858DB7, 0xCC000)
-      || !MatchesBuild(unity, 0x6A85914F, 0x208B000)) return false;
+  if ((!MatchesBuild(unity, 0x6A85914F, 0x208B000) && !MatchesBuild(unity, 0x6A85914F, 0x208A000))
+      || !endfield::game_build::IsSupportedUnityPlayer(unity)) return false;
   auto* base = reinterpret_cast<BYTE*>(unity);
   auto* nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
   const auto imports = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];

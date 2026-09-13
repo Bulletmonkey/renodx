@@ -4,9 +4,8 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
-#include <wincrypt.h>
-#pragma comment(lib, "crypt32.lib")
 #include "./enhancer.hpp"
+#include "./game_build.hpp"
 
 namespace endfield::npc_distance {
 inline float regular_enabled = 0.f, ambient_enabled = 0.f, limit_enabled = 0.f;
@@ -86,24 +85,7 @@ inline bool SetLimit(int* value, float requested) {
 }
 
 inline bool SupportedBuild() {
-  wchar_t path[MAX_PATH]{};
-  if (!GetModuleFileNameW(GetModuleHandleW(L"GameAssembly.dll"), path, MAX_PATH)) return false;
-  HANDLE file = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (file == INVALID_HANDLE_VALUE) return false;
-  LARGE_INTEGER size{};
-  HANDLE mapping = GetFileSizeEx(file, &size) && size.QuadPart > 0 && size.QuadPart <= MAXDWORD
-                       ? CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr)
-                       : nullptr;
-  const auto* bytes = mapping ? static_cast<const BYTE*>(MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, 0)) : nullptr;
-  std::array<BYTE, 32> hash{};
-  DWORD length = static_cast<DWORD>(hash.size());
-  const bool hashed = bytes && CryptHashCertificate2(L"SHA256", 0, nullptr, bytes, static_cast<DWORD>(size.QuadPart), hash.data(), &length);
-  if (bytes) UnmapViewOfFile(bytes);
-  if (mapping) CloseHandle(mapping);
-  CloseHandle(file);
-  constexpr std::array<BYTE, 32> expected = {0x59, 0x3d, 0x0b, 0x90, 0x5f, 0x79, 0x3e, 0x6b, 0xeb, 0xd2, 0x5e, 0xc3, 0x43, 0x2a, 0xf3, 0xf7, 0xff, 0x0f, 0x4f, 0x0c, 0x24, 0x39, 0x9e, 0xc4, 0x9c, 0x3d, 0xdb, 0xb1, 0x29, 0xbd, 0xc8, 0x6c};
-  return hashed && length == expected.size() && hash == expected;
+  return game_build::IsSupportedGameAssembly(GetModuleHandleW(L"GameAssembly.dll"));
 }
 
 inline bool Resolve() {

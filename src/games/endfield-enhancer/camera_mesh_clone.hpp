@@ -24,8 +24,7 @@ inline void HookedMeshAwake(void* mesh) {
 }
 inline bool ResolveCloneAwake(ResolveICall icall) {
   HMODULE module = GetModuleHandleW(L"UnityPlayer.dll");
-  if (endfield::runtime_status::LoadedModuleFileSha256(module)
-      != "41d8ba3111c5652c777124ee321d53f14f31ee866a6317eefb4ecf20168370b5") return false;
+  if (!endfield::game_build::IsSupportedUnityPlayer(module)) return false;
   const auto* base = reinterpret_cast<const uint8_t*>(module);
   const auto* wrapper = static_cast<const uint8_t*>(icall("UnityEngine.Mesh::UploadMeshDataImpl"));
   constexpr uint8_t wrapper_call[] = {0x40, 0x84, 0xff, 0x48, 0x8b, 0xc8, 0x0f, 0x95, 0xc2, 0xe8, 0x53, 0x00, 0x00, 0x00};

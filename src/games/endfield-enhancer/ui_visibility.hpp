@@ -211,7 +211,7 @@ inline bool Resolve() {
   const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
   const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
   if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64
-      || nt->OptionalHeader.SizeOfImage != 0xf7cb000) return false;
+      || (nt->OptionalHeader.SizeOfImage != 0xf7cb000 && nt->OptionalHeader.SizeOfImage != 0xf7cc000)) return false;
   const auto* sections = IMAGE_FIRST_SECTION(nt);
   size_t matches = 0;
   for (unsigned i = 0; i < nt->FileHeader.NumberOfSections; ++i) {

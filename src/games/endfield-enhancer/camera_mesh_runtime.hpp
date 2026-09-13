@@ -200,7 +200,7 @@ inline void Start(bool requested_fill) {
   }
 
   if (!ResolveExport(GetModuleHandleW(L"GameAssembly.dll"), "il2cpp_resolve_icall", &resolve)) return;
-  if (!started && endfield::runtime_status::LoadedModuleFileSha256(GetModuleHandleW(L"UnityPlayer.dll")) != "41d8ba3111c5652c777124ee321d53f14f31ee866a6317eefb4ecf20168370b5") {
+  if (!started && !endfield::game_build::IsSupportedUnityPlayer(GetModuleHandleW(L"UnityPlayer.dll"))) {
     return;
   }
   ResolveExport(GetModuleHandleW(L"GameAssembly.dll"), "il2cpp_object_new", &new_object);
