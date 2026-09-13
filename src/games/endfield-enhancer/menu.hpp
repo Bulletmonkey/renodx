@@ -125,6 +125,7 @@ inline void Draw(const renodx::utils::settings::Settings& settings) {
       {"Freecam Shortcuts", 8, false},
       {"UI Shortcuts", 8, false},
       {"First Person Shortcuts", 8, false},
+      {"Window Shortcuts", 8, false},
       {"Camera Position", 6, false},
       {"Camera Rotation", 6, false},
       {"First Person", 6, false},

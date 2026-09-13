@@ -630,6 +630,19 @@ __declspec(noinline) inline sl::Result ForwardFrameGenerationOptionsLocked(
     forwarded_options.colorBufferFormat = kHDR10Format;
   }
 
+  // Record changes only, to diagnose native window resizing with DLSS-G.
+  static uint32_t logged_options[5] = {};
+  const uint32_t current_options[] = {options.colorWidth, options.colorHeight,
+      options.mvecDepthWidth, options.mvecDepthHeight, static_cast<uint32_t>(options.mode)};
+  if (std::memcmp(logged_options, current_options, sizeof(current_options)) != 0) {
+    std::memcpy(logged_options, current_options, sizeof(current_options));
+    char message[256];
+    std::snprintf(message, sizeof(message),
+        "Endfield resize: DLSS-G options color=%ux%u depth/motion=%ux%u mode=%u.",
+        current_options[0], current_options[1], current_options[2], current_options[3], current_options[4]);
+    Log(reshade::log::level::info, message);
+  }
+
   frame_generation_presenting.store(false, std::memory_order_release);
 
   sl::Result result;
@@ -669,9 +682,29 @@ inline sl::Result HookedSetFrameGenerationOptions(
 inline const sl::ResourceTag* FilterFrameGenerationTags(
     const sl::ResourceTag* tags,
     uint32_t num_tags) {
-  if (!hdr_hooks_installed || tags == nullptr || num_tags == 0u) {
+  if (tags == nullptr || num_tags == 0u) {
     return tags;
   }
+
+  // Per-thread dimensions only: rotating image handles must not spam the log.
+  thread_local uint64_t logged_extents[3] = {};
+  for (uint32_t i = 0; i < num_tags; ++i) {
+    const auto& tag = tags[i];
+    const int slot = tag.type == sl::kBufferTypeDepth ? 0
+        : tag.type == sl::kBufferTypeMotionVectors ? 1
+        : tag.type == sl::kBufferTypeHUDLessColor ? 2 : -1;
+    if (slot < 0 || tag.resource == nullptr) continue;
+    const uint64_t extent = (static_cast<uint64_t>(tag.extent.width) << 32) | tag.extent.height;
+    if (logged_extents[slot] == extent) continue;
+    logged_extents[slot] = extent;
+    char message[256];
+    std::snprintf(message, sizeof(message),
+        "Endfield resize: DLSS-G tag type=%u region=%u,%u %ux%u resource=%ux%u.",
+        static_cast<uint32_t>(tag.type), tag.extent.left, tag.extent.top,
+        tag.extent.width, tag.extent.height, tag.resource->width, tag.resource->height);
+    Log(reshade::log::level::info, message);
+  }
+  if (!hdr_hooks_installed) return tags;
 
   bool has_hudless_color = false;
   for (uint32_t i = 0u; i < num_tags; ++i) {
@@ -746,6 +779,14 @@ inline VkResult VKAPI_CALL HookedStreamlineCreateSwapchain(
       use_hdr ? &hdr_create_info : create_info,
       allocator,
       swapchain);
+  if (result == VK_SUCCESS && create_info != nullptr) {
+    char message[192];
+    std::snprintf(message, sizeof(message),
+        "Endfield resize: application swapchain=%ux%u DLSS-G presenting=%u.",
+        create_info->imageExtent.width, create_info->imageExtent.height,
+        frame_generation_presenting.load(std::memory_order_relaxed) ? 1u : 0u);
+    Log(reshade::log::level::info, message);
+  }
   if (result == VK_SUCCESS && use_hdr && swapchain != nullptr) {
     endfield::hdr_output::TrackSwapchain(device, *swapchain, hdr_create_info);
   }

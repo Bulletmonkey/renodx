@@ -86,8 +86,8 @@ void OnInitSwapchain(reshade::api::swapchain* swapchain, bool resize) {
 }
 
 void OnDestroySwapchain(reshade::api::swapchain* swapchain, bool resize) {
-  (void)swapchain;
-  (void)resize;
+  // Window controls belong to the HWND, which survives Vulkan swapchain recreation.
+  // The worker removes them when the window is destroyed.
   endfield::lod::OnRendererReset();
   limiter_resume_delay.store(
       kLimiterResumeDelayFrames, std::memory_order_relaxed);
@@ -243,6 +243,7 @@ renodx::utils::settings::Settings settings = {
     endfield::shortcuts::Create("ShortcutFreeBoost", VK_SHIFT, "Speed Boost (Hold)", "Freecam Shortcuts"),
     endfield::shortcuts::Create("ShortcutHideUI", VK_F7, "Toggle Hide UI", "UI Shortcuts"),
     endfield::shortcuts::Create("ShortcutFirstPerson", VK_F8, "Toggle First Person", "First Person Shortcuts"),
+    endfield::shortcuts::Create("ShortcutFullscreen", VK_F12, "Toggle Fullscreen / Windowed", "Window Shortcuts"),
     new renodx::utils::settings::Setting{
         .key = "CameraFreeSpeed",
         .binding = &endfield::camera::detail::freecam::speed,
@@ -1254,6 +1255,9 @@ void OnPresent(
   HWND window = swapchain == nullptr
                     ? nullptr
                     : static_cast<HWND>(swapchain->get_hwnd());
+  endfield::window_enhancements::install_window_enhancements(
+      window, endfield::runtime_status::addon_module);
+  endfield::window_enhancements::notify_window_presented();
   UpdateFpsLimitFormat(fps_limit_setting);
   UpdateFpsLimitFormat(frame_generation_fps_limit_setting);
   UpdateFpsLimitFormat(background_fps_limit_setting);
@@ -1307,6 +1311,11 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
   switch (reason) {
     case DLL_PROCESS_ATTACH:
       endfield::runtime_status::addon_module = h_module;
+      endfield::cursor_guard::status_log = [](bool installed) {
+        reshade::log::message(installed ? reshade::log::level::info : reshade::log::level::warning,
+            installed ? "Endfield cursor guard: Unity cursor imports installed."
+                      : "Endfield cursor guard: refused unsupported build, changed imports, or failed transaction; native cursor behavior retained.");
+      };
       if (!reshade::register_addon(h_module)) return FALSE;
       renodx::utils::settings::use_presets = false;
       renodx::utils::settings::overlay_title = "Endfield Enhancer";
@@ -1324,6 +1333,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
       if (kScreenshotSupport) reshade::register_event<reshade::addon_event::destroy_device>(endfield::screenshots::observer::OnDestroyDevice);
       break;
     case DLL_PROCESS_DETACH:
+      endfield::window_enhancements::request_window_enhancements_shutdown();
       reshade::unregister_event<reshade::addon_event::present>(OnPresent);
       reshade::unregister_event<reshade::addon_event::reshade_overlay>(endfield::shortcuts::OnFrame);
       reshade::unregister_event<reshade::addon_event::reshade_present>(endfield::camera::detail::freecam::OnCursorPresent);
