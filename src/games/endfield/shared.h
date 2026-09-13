@@ -37,6 +37,7 @@
 
 // Must be 32bit aligned
 // Should be 4x32
+// Reserved slots preserve the injection layout used by compiled shader replacements.
 struct ShaderInjectData {
   float peak_white_nits;
   float diffuse_white_nits;
@@ -78,14 +79,14 @@ struct ShaderInjectData {
   float tone_map_hdr_video;
   float tone_map_video_nits;
   float reno_drt_tone_map_method;
-  float status_text_opacity;
-  float ping_text_opacity;
-  float latency_text_opacity;
-  float latency_bar_draw_opacity;
+  float reserved_0;
+  float reserved_1;
+  float reserved_2;
+  float reserved_3;
   float custom_random;
   float custom_grain_strength;
   float vignette_strength;
-  float ui_visibility;
+  float reserved_4;
   float sun_intensity;
   float bloom_strength;
   float godrays_intensity;
@@ -98,14 +99,14 @@ struct ShaderInjectData {
   float glass_transparency;
   float improved_ssr;
   float tech_test_look;
-  float ui_aspect_ratio;
+  float reserved_5;
   float improved_gtao;
   float fake_cloud_shadows;
   // Append only: existing compiled replacements use the first 15 float4 slots.
-  float latency_bar_viewport_width;
-  float latency_bar_viewport_height;
-  float latency_bar_viewport_x;
-  float latency_bar_viewport_y;
+  float reserved_6;
+  float reserved_7;
+  float reserved_8;
+  float reserved_9;
 };
 
 #ifndef __cplusplus
@@ -152,14 +153,9 @@ cbuffer shader_injection : register(b13) {
 #define RENODX_TONE_MAP_HDR_VIDEO              shader_injection.tone_map_hdr_video
 #define RENODX_VIDEO_NITS                      shader_injection.tone_map_video_nits
 #define RENODX_RENO_DRT_TONE_MAP_METHOD        shader_injection.reno_drt_tone_map_method
-#define PING_TEXT_OPACITY                      shader_injection.ping_text_opacity
-#define LATENCY_TEXT_OPACITY                   shader_injection.latency_text_opacity
-#define LATENCY_BAR_DRAW_OPACITY               shader_injection.latency_bar_draw_opacity
-#define STATUS_TEXT_OPACITY                    shader_injection.status_text_opacity
 #define CUSTOM_RANDOM                          shader_injection.custom_random
 #define CUSTOM_GRAIN_STRENGTH                  shader_injection.custom_grain_strength
 #define VIGNETTE_STRENGTH                      shader_injection.vignette_strength
-#define UI_VISIBILITY                          shader_injection.ui_visibility
 #define SUN_INTENSITY                          shader_injection.sun_intensity
 #define BLOOM_STRENGTH                         shader_injection.bloom_strength
 #define GODRAYS_INTENSITY                      shader_injection.godrays_intensity
@@ -169,7 +165,6 @@ cbuffer shader_injection : register(b13) {
 #define FOG_MODIFICATION                       shader_injection.fog_modification
 #define GLASS_TRANSPARENCY                     shader_injection.glass_transparency
 #define TECH_TEST_LOOK                         shader_injection.tech_test_look
-#define UI_ASPECT_RATIO                        shader_injection.ui_aspect_ratio
 #define AO_RADIUS                              4.0
 #define AO_RADIUS_SCALE                        1.0
 #define AO_FALLOFF_RANGE                       1.0

@@ -14,7 +14,6 @@
 #include <mutex>
 #include <shared_mutex>
 #include <sstream>
-#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -26,7 +25,6 @@
 #include "../../mods/shader.hpp"
 #include "../../mods/swapchain.hpp"
 #include "../../utils/bitwise.hpp"
-#include "../../utils/command_action.hpp"
 #include "../../utils/data.hpp"
 #include "../../utils/hash.hpp"
 #include "../../utils/settings.hpp"
@@ -56,7 +54,6 @@ static_assert(offsetof(ShaderInjectData, fog_modification) == 49 * sizeof(float)
 static_assert(offsetof(ShaderInjectData, cubemap_ambient_link) == 53 * sizeof(float));
 static_assert(offsetof(ShaderInjectData, glass_transparency) == 54 * sizeof(float));
 static_assert(offsetof(ShaderInjectData, improved_gtao) == 58 * sizeof(float));
-static_assert(offsetof(ShaderInjectData, latency_bar_viewport_width) == 60 * sizeof(float));
 
 const std::string build_date = __DATE__;
 const std::string build_time = __TIME__;
@@ -281,18 +278,8 @@ bool ExecuteReshadeEffects(reshade::api::command_list* cmd_list) {
   return true;
 }
 
-// Hotkey state tracking
-bool ui_toggle_key_was_pressed = false;
-int ui_toggle_hotkey = 0;
-bool hotkey_input_active = false;
-
 struct __declspec(uuid("019bf1c8-074a-7e13-b353-54ce3ceec3de")) VfxCommandListData {
   reshade::api::resource_view pixel_srv_t0 = {0u};
-  bool is_ping_input_candidate = false;
-  bool is_ping_drawn = false;
-  bool is_uid_input_candidate = false;
-  uint32_t draw_call_vertex_count = 0u;
-  float latency_bar_draw_opacity = 1.f;
 };
 
 struct VfxBoostMatch {
@@ -387,11 +374,6 @@ void OnResetVfxCommandList(reshade::api::command_list* cmd_list) {
   auto* data = renodx::utils::data::Get<VfxCommandListData>(cmd_list);
   if (data != nullptr) {
     data->pixel_srv_t0 = {0u};
-    data->is_ping_input_candidate = false;
-    data->is_ping_drawn = false;
-    data->is_uid_input_candidate = false;
-    data->draw_call_vertex_count = 0u;
-    data->latency_bar_draw_opacity = 1.f;
   }
 }
 
@@ -413,112 +395,6 @@ void OnPushVfxDescriptors(
   auto* data = renodx::utils::data::Get<VfxCommandListData>(cmd_list);
   if (data == nullptr) return;
   data->pixel_srv_t0 = static_cast<const reshade::api::resource_view*>(update.descriptors)[0];
-}
-
-bool IsVisible(float value) {
-  return value >= 0.5f;
-}
-
-reshade::api::rect IntersectRects(const reshade::api::rect& lhs, const reshade::api::rect& rhs) {
-  return {
-      .left = std::max(lhs.left, rhs.left),
-      .top = std::max(lhs.top, rhs.top),
-      .right = std::min(lhs.right, rhs.right),
-      .bottom = std::min(lhs.bottom, rhs.bottom),
-  };
-}
-
-bool DrawTextRegion(
-    reshade::api::command_list* cmd_list,
-    uint32_t index_count,
-    uint32_t instance_count,
-    uint32_t first_index,
-    int32_t vertex_offset,
-    uint32_t first_instance,
-    bool keep_latency_text) {
-  auto* current_state = renodx::utils::state::GetCurrentState(cmd_list);
-  if (current_state == nullptr || current_state->viewports.empty()) return false;
-
-  const auto previous_state = *current_state;
-  const auto& viewport = current_state->viewports[0];
-  const int32_t left = static_cast<int32_t>(viewport.x);
-  const int32_t top = static_cast<int32_t>(viewport.y);
-  const int32_t right = static_cast<int32_t>(viewport.x + viewport.width);
-  const int32_t bottom = static_cast<int32_t>(viewport.y + viewport.height);
-  if (right <= left || bottom <= top) return false;
-
-  constexpr float kTextSplitFromHeight = 192.f / 2160.f;
-  const int32_t split_x = left + static_cast<int32_t>((bottom - top) * kTextSplitFromHeight + 0.5f);
-  reshade::api::rect clip_rect = keep_latency_text
-      ? reshade::api::rect{.left = left, .top = top, .right = split_x, .bottom = bottom}
-      : reshade::api::rect{.left = split_x, .top = top, .right = right, .bottom = bottom};
-
-  if (!current_state->scissor_rects.empty()) {
-    clip_rect = IntersectRects(clip_rect, current_state->scissor_rects[0]);
-  }
-  if (clip_rect.right <= clip_rect.left || clip_rect.bottom <= clip_rect.top) return true;
-
-  cmd_list->bind_scissor_rects(0, 1, &clip_rect);
-  cmd_list->draw_indexed(index_count, instance_count, first_index, vertex_offset, first_instance);
-  previous_state.Apply(cmd_list);
-  return true;
-}
-
-// on_draw callback for ping/latency bar shader (0xF1B0E28A)
-bool OnPingDraw(reshade::api::command_list* cmd_list) {
-  auto* data = renodx::utils::data::Get<VfxCommandListData>(cmd_list);
-  if (data == nullptr) return true;
-
-  if (data->is_ping_input_candidate) {
-    data->is_ping_drawn = true;
-  } else {
-    data->is_ping_drawn = false;
-  }
-  return true;
-}
-
-bool OnUIDDraw(reshade::api::command_list* cmd_list) {
-  auto* data = renodx::utils::data::Get<VfxCommandListData>(cmd_list);
-  if (data != nullptr && data->is_uid_input_candidate) {
-    if (!IsVisible(shader_injection.status_text_opacity) &&
-        !IsVisible(shader_injection.latency_text_opacity)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool OnUiVisibilityDraw(reshade::api::command_list* cmd_list) {
-  return shader_injection.ui_visibility >= 0.5f;
-}
-
-bool OnUidOrUiVisibilityDraw(reshade::api::command_list* cmd_list) {
-  if (shader_injection.ui_visibility < 0.5f) return false;
-  return OnUIDDraw(cmd_list);
-}
-
-bool KeepOriginalShader(reshade::api::command_list* cmd_list) {
-  return false;
-}
-
-bool OnLatencyBarInject(reshade::api::command_list* cmd_list) {
-  auto* data = renodx::utils::data::Get<VfxCommandListData>(cmd_list);
-  shader_injection.latency_bar_draw_opacity = data != nullptr
-      ? data->latency_bar_draw_opacity
-      : 1.f;
-  shader_injection.latency_bar_viewport_width = 0.f;
-  shader_injection.latency_bar_viewport_height = 0.f;
-  shader_injection.latency_bar_viewport_x = 0.f;
-  shader_injection.latency_bar_viewport_y = 0.f;
-  if (const auto* state = renodx::utils::state::GetCurrentState(cmd_list);
-      state != nullptr && !state->viewports.empty()) {
-    const auto& viewport = state->viewports[0];
-    shader_injection.latency_bar_viewport_width = viewport.width;
-    shader_injection.latency_bar_viewport_height = viewport.height;
-    shader_injection.latency_bar_viewport_x = viewport.x;
-    shader_injection.latency_bar_viewport_y = viewport.y;
-  }
-  return true;
 }
 
 void RestoreVFXBoostShader(
@@ -562,115 +438,6 @@ bool ReplaceImprovedGTAOShader(reshade::api::command_list* cmd_list) {
 
 bool ReplaceDisableGTAOShader(reshade::api::command_list* cmd_list) {
   return shader_injection.disable_game_ao >= 0.5f;
-}
-
-void RegisterUiVisibilityBypassShader(uint32_t crc) {
-  auto it = custom_shaders.find(crc);
-  if (it == custom_shaders.end()) {
-    renodx::mods::shader::CustomShader cs{};
-    cs.crc32 = crc;
-    cs.on_draw = OnUiVisibilityDraw;
-    cs.on_replace = KeepOriginalShader;
-    custom_shaders.emplace(crc, std::move(cs));
-    return;
-  }
-
-  it->second.on_draw = OnUiVisibilityDraw;
-  it->second.on_replace = KeepOriginalShader;
-}
-
-void RegisterUidBypassShader(uint32_t crc) {
-  auto it = custom_shaders.find(crc);
-  if (it == custom_shaders.end()) {
-    renodx::mods::shader::CustomShader cs{};
-    cs.crc32 = crc;
-    cs.on_draw = OnUidOrUiVisibilityDraw;
-    cs.on_replace = KeepOriginalShader;
-    custom_shaders.emplace(crc, std::move(cs));
-    return;
-  }
-
-  it->second.on_draw = OnUidOrUiVisibilityDraw;
-  it->second.on_replace = KeepOriginalShader;
-}
-
-
-// Helper function to get key name from virtual key code
-std::string GetKeyName(int keycode) {
-  if (keycode == 0 || keycode >= 256) return "";
-
-  static const char* keyboard_keys[256] = {
-    "", "Left Mouse", "Right Mouse", "Cancel", "Middle Mouse", "X1 Mouse", "X2 Mouse", "", "Backspace", "Tab", "", "", "Clear", "Enter", "", "",
-    "Shift", "Control", "Alt", "Pause", "Caps Lock", "", "", "", "", "", "", "Escape", "", "", "", "",
-    "Space", "Page Up", "Page Down", "End", "Home", "Left Arrow", "Up Arrow", "Right Arrow", "Down Arrow", "Select", "", "", "Print Screen", "Insert", "Delete", "Help",
-    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "", "", "", "", "", "",
-    "", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O",
-    "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "Left Windows", "Right Windows", "Apps", "", "Sleep",
-    "Numpad 0", "Numpad 1", "Numpad 2", "Numpad 3", "Numpad 4", "Numpad 5", "Numpad 6", "Numpad 7", "Numpad 8", "Numpad 9", "Numpad *", "Numpad +", "", "Numpad -", "Numpad Decimal", "Numpad /",
-    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F14", "F15", "F16",
-    "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24", "", "", "", "", "", "", "", "",
-    "Num Lock", "Scroll Lock", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
-    "Left Shift", "Right Shift", "Left Control", "Right Control", "Left Menu", "Right Menu", "Browser Back", "Browser Forward", "Browser Refresh", "Browser Stop", "Browser Search", "Browser Favorites", "Browser Home", "Volume Mute", "Volume Down", "Volume Up",
-    "Next Track", "Previous Track", "Media Stop", "Media Play/Pause", "Mail", "Media Select", "Launch App 1", "Launch App 2", "", "", "OEM ;", "OEM +", "OEM ,", "OEM -", "OEM .", "OEM /",
-    "OEM ~", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
-    "", "", "", "", "", "", "", "", "", "", "", "OEM [", "OEM \\", "OEM ]", "OEM '", "OEM 8",
-    "", "", "OEM <", "", "", "", "", "", "", "", "", "", "", "", "", "",
-    "", "", "", "", "", "", "Attn", "CrSel", "ExSel", "Erase EOF", "Play", "Zoom", "", "PA1", "OEM Clear", ""
-  };
-
-  return keyboard_keys[keycode];
-}
-
-int GetLastKeyPressedImGui() {
-
-  struct KeyMapping {
-    ImGuiKey imgui_key;
-    int vk_code;
-  };
-
-  static const KeyMapping kKeyMappings[] = {
-    // Function keys
-    {ImGuiKey_F1, VK_F1}, {ImGuiKey_F2, VK_F2}, {ImGuiKey_F3, VK_F3}, {ImGuiKey_F4, VK_F4},
-    {ImGuiKey_F5, VK_F5}, {ImGuiKey_F6, VK_F6}, {ImGuiKey_F7, VK_F7}, {ImGuiKey_F8, VK_F8},
-    {ImGuiKey_F9, VK_F9}, {ImGuiKey_F10, VK_F10}, {ImGuiKey_F11, VK_F11}, {ImGuiKey_F12, VK_F12},
-    // Navigation keys
-    {ImGuiKey_Insert, VK_INSERT}, {ImGuiKey_Delete, VK_DELETE}, {ImGuiKey_Home, VK_HOME}, {ImGuiKey_End, VK_END},
-    {ImGuiKey_PageUp, VK_PRIOR}, {ImGuiKey_PageDown, VK_NEXT},
-    // Arrow keys
-    {ImGuiKey_LeftArrow, VK_LEFT}, {ImGuiKey_RightArrow, VK_RIGHT}, {ImGuiKey_UpArrow, VK_UP}, {ImGuiKey_DownArrow, VK_DOWN},
-    // Special keys
-    {ImGuiKey_Backspace, VK_BACK}, {ImGuiKey_Space, VK_SPACE}, {ImGuiKey_Enter, VK_RETURN},
-    {ImGuiKey_Escape, VK_ESCAPE}, {ImGuiKey_Tab, VK_TAB},
-    {ImGuiKey_Pause, VK_PAUSE}, {ImGuiKey_ScrollLock, VK_SCROLL}, {ImGuiKey_PrintScreen, VK_SNAPSHOT},
-    // Numpad
-    {ImGuiKey_Keypad0, VK_NUMPAD0}, {ImGuiKey_Keypad1, VK_NUMPAD1}, {ImGuiKey_Keypad2, VK_NUMPAD2},
-    {ImGuiKey_Keypad3, VK_NUMPAD3}, {ImGuiKey_Keypad4, VK_NUMPAD4}, {ImGuiKey_Keypad5, VK_NUMPAD5},
-    {ImGuiKey_Keypad6, VK_NUMPAD6}, {ImGuiKey_Keypad7, VK_NUMPAD7}, {ImGuiKey_Keypad8, VK_NUMPAD8},
-    {ImGuiKey_Keypad9, VK_NUMPAD9}, {ImGuiKey_KeypadDecimal, VK_DECIMAL},
-    {ImGuiKey_KeypadDivide, VK_DIVIDE}, {ImGuiKey_KeypadMultiply, VK_MULTIPLY},
-    {ImGuiKey_KeypadSubtract, VK_SUBTRACT}, {ImGuiKey_KeypadAdd, VK_ADD}, {ImGuiKey_KeypadEnter, VK_RETURN},
-    // Letters
-    {ImGuiKey_A, 'A'}, {ImGuiKey_B, 'B'}, {ImGuiKey_C, 'C'}, {ImGuiKey_D, 'D'}, {ImGuiKey_E, 'E'},
-    {ImGuiKey_F, 'F'}, {ImGuiKey_G, 'G'}, {ImGuiKey_H, 'H'}, {ImGuiKey_I, 'I'}, {ImGuiKey_J, 'J'},
-    {ImGuiKey_K, 'K'}, {ImGuiKey_L, 'L'}, {ImGuiKey_M, 'M'}, {ImGuiKey_N, 'N'}, {ImGuiKey_O, 'O'},
-    {ImGuiKey_P, 'P'}, {ImGuiKey_Q, 'Q'}, {ImGuiKey_R, 'R'}, {ImGuiKey_S, 'S'}, {ImGuiKey_T, 'T'},
-    {ImGuiKey_U, 'U'}, {ImGuiKey_V, 'V'}, {ImGuiKey_W, 'W'}, {ImGuiKey_X, 'X'}, {ImGuiKey_Y, 'Y'}, {ImGuiKey_Z, 'Z'},
-    // Numbers
-    {ImGuiKey_0, '0'}, {ImGuiKey_1, '1'}, {ImGuiKey_2, '2'}, {ImGuiKey_3, '3'}, {ImGuiKey_4, '4'},
-    {ImGuiKey_5, '5'}, {ImGuiKey_6, '6'}, {ImGuiKey_7, '7'}, {ImGuiKey_8, '8'}, {ImGuiKey_9, '9'},
-    // Punctuation
-    {ImGuiKey_GraveAccent, VK_OEM_3}, {ImGuiKey_Minus, VK_OEM_MINUS}, {ImGuiKey_Equal, VK_OEM_PLUS},
-    {ImGuiKey_LeftBracket, VK_OEM_4}, {ImGuiKey_RightBracket, VK_OEM_6}, {ImGuiKey_Backslash, VK_OEM_5},
-    {ImGuiKey_Semicolon, VK_OEM_1}, {ImGuiKey_Apostrophe, VK_OEM_7},
-    {ImGuiKey_Comma, VK_OEM_COMMA}, {ImGuiKey_Period, VK_OEM_PERIOD}, {ImGuiKey_Slash, VK_OEM_2},
-  };
-
-  for (const auto& mapping : kKeyMappings) {
-    if (ImGui::IsKeyPressed(mapping.imgui_key, false)) {
-      return mapping.vk_code;
-    }
-  }
-  return 0;
 }
 
 renodx::utils::settings::Settings settings = {
@@ -950,114 +717,12 @@ renodx::utils::settings::Settings settings = {
         .parse = [](float value) { return value * 0.01f; },
     },
     new renodx::utils::settings::Setting{
-        .key = "UIOpacityStatusText",
-        .binding = &shader_injection.status_text_opacity,
-        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-        .default_value = 0.f,
-        .label = "UID Text",
-        .section = "User Interface & Video",
-        .tooltip = "Toggle UID text visibility",
-        .labels = {"Hidden", "Visible"},
-    },
-    new renodx::utils::settings::Setting{
-        .key = "UIOpacityLatencyText",
-        .binding = &shader_injection.latency_text_opacity,
-        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-        .default_value = 0.f,
-        .label = "Latency Text",
-        .section = "User Interface & Video",
-        .tooltip = "Toggle latency text visibility",
-        .labels = {"Hidden", "Visible"},
-    },
-    new renodx::utils::settings::Setting{
-        .key = "UIOpacityPingText",
-        .binding = &shader_injection.ping_text_opacity,
-        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-        .default_value = 0.f,
-        .label = "Latency Bar",
-        .section = "User Interface & Video",
-        .tooltip = "Toggle latency bar visibility",
-        .labels = {"Hidden", "Visible"},
-    },
-    new renodx::utils::settings::Setting{
-        .key = "UIVisibility",
-        .binding = &shader_injection.ui_visibility,
-        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
-        .default_value = 1.f,
-        .label = "UI Visibility",
-        .section = "User Interface & Video",
-        .tooltip = "Toggle UI visibility for screenshots (use hotkey for quick toggle)",
-        .labels = {"Hidden", "Visible"},
-    },
-    new renodx::utils::settings::Setting{
-        .key = "UIVisibilityHotkey",
-        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
-        .default_value = 0.f,
-        .label = "UI Toggle Hotkey",
-        .section = "User Interface & Video",
-        .tooltip = "Click in the field and press any key to set the hotkey, or press Backspace/Delete to clear",
-        .on_draw = []() {
-          static bool key_was_pressed = false;
-          bool changed = false;
-
-          // Get current key name for display
-          std::string key_name = ui_toggle_hotkey != 0 ? GetKeyName(ui_toggle_hotkey) : "";
-          char buf[64] = {0};
-          if (!key_name.empty()) {
-            size_t copy_len = (key_name.size() < sizeof(buf) - 1) ? key_name.size() : sizeof(buf) - 1;
-            memcpy(buf, key_name.c_str(), copy_len);
-          }
-
-          // Create the input text widget
-          ImGui::InputTextWithHint(
-              "UI Toggle Hotkey",
-              "Click to set keyboard shortcut",
-              buf,
-              sizeof(buf),
-              ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_NoUndoRedo | ImGuiInputTextFlags_NoHorizontalScroll
-          );
-
-          // Check if widget is active and capture key presses
-          if (ImGui::IsItemActive()) {
-            hotkey_input_active = true;
-            int key_pressed = GetLastKeyPressedImGui();
-
-            if (key_pressed != 0 && !key_was_pressed) {
-              if (key_pressed == VK_BACK || key_pressed == VK_DELETE) {
-                ui_toggle_hotkey = 0;
-                changed = true;
-              } else if (key_pressed != VK_ESCAPE) {
-                ui_toggle_hotkey = key_pressed;
-                changed = true;
-              }
-
-              if (changed) {
-                reshade::set_config_value(nullptr, renodx::utils::settings::global_name.c_str(), "UIVisibilityHotkey", ui_toggle_hotkey);
-              }
-              key_was_pressed = true;
-            } else if (key_pressed == 0) {
-              key_was_pressed = false;
-            }
-          } else {
-            hotkey_input_active = false;
-            key_was_pressed = false;
-          }
-
-          if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
-            ImGui::SetTooltip("Click and press any key to set hotkey.\nPress Backspace or Delete to clear.");
-          }
-
-          return changed;
-        },
-        .is_global = true,
-    },
-    new renodx::utils::settings::Setting{
         .key = "VideoAutoHDR",
         .binding = &shader_injection.tone_map_hdr_video,
         .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
         .default_value = 1.f,
         .label = "Video AutoHDR",
-        .section = "User Interface & Video",
+        .section = "Video",
         .tooltip = "Upgrades SDR videos to HDR.",
     },
     new renodx::utils::settings::Setting{
@@ -1066,7 +731,7 @@ renodx::utils::settings::Settings settings = {
         .default_value = 500.f,
         .can_reset = true,
         .label = "Video Brightness",
-        .section = "User Interface & Video",
+        .section = "Video",
         .tooltip = "Sets the peak brightness for video content in nits",
         .min = 48.f,
         .max = 1000.f,
@@ -1431,146 +1096,6 @@ void OnPresetOff() {
   //   renodx::utils::settings::UpdateSetting("colorGradeLUTScaling", 0.f);
 }
 
-// OnDraw handler to track vertex count from draw calls
-bool OnDraw(
-    reshade::api::command_list* cmd_list,
-    uint32_t vertex_count,
-    uint32_t instance_count,
-    uint32_t first_vertex,
-    uint32_t first_instance) {
-  auto* data = renodx::utils::data::Get<VfxCommandListData>(cmd_list);
-  if (data != nullptr) {
-    data->draw_call_vertex_count = vertex_count;
-    data->latency_bar_draw_opacity = 1.f;
-  }
-  return false;
-}
-
-// OnDrawIndexed event handler for heuristic-based ping/UID detection
-bool OnDrawIndexed(
-    reshade::api::command_list* cmd_list,
-    uint32_t index_count,
-    uint32_t instance_count,
-    uint32_t first_index,
-    int32_t vertex_offset,
-    uint32_t first_instance) {
-  auto* data = renodx::utils::data::Get<VfxCommandListData>(cmd_list);
-  if (data == nullptr) return false;
-
-  constexpr uint32_t PING_INDEX_COUNT = 18u;
-  constexpr uint32_t PING_FIRST_INDEX = 0u;
-  constexpr int32_t PING_VERTEX_OFFSET = 0;
-  constexpr uint32_t UID_FIRST_INDEX = 18u;
-  constexpr uint32_t UID_MIN_INDEX_COUNT = 100u;
-  constexpr int32_t UID_VERTEX_OFFSET = 12;
-
-  const bool ping_geometry_candidate = index_count == PING_INDEX_COUNT
-                                    && first_index == PING_FIRST_INDEX
-                                    && vertex_offset == PING_VERTEX_OFFSET;
-  const bool uid_geometry_candidate = first_index == UID_FIRST_INDEX
-                                   && index_count > UID_MIN_INDEX_COUNT
-                                   && vertex_offset == UID_VERTEX_OFFSET;
-
-  data->is_ping_input_candidate = false;
-  data->is_uid_input_candidate = false;
-  data->latency_bar_draw_opacity = 1.f;
-  if (IsVisible(shader_injection.ui_visibility)
-      && !ping_geometry_candidate
-      && !uid_geometry_candidate) {
-    data->draw_call_vertex_count = 0u;
-    return false;
-  }
-
-  auto* shader_state = renodx::utils::shader::GetCurrentState(cmd_list);
-  const uint32_t vertex_shader_hash = shader_state != nullptr
-      ? renodx::utils::shader::GetCurrentVertexShaderHash(shader_state)
-      : 0u;
-  const uint32_t pixel_shader_hash = shader_state != nullptr
-      ? renodx::utils::shader::GetCurrentPixelShaderHash(shader_state)
-      : 0u;
-
-  if (!IsVisible(shader_injection.ui_visibility)
-      && (vertex_shader_hash == 0x1529ADE6u || pixel_shader_hash == 0x1529ADE6u
-          || vertex_shader_hash == 0xEB8D2859u || pixel_shader_hash == 0xEB8D2859u)) {
-    data->draw_call_vertex_count = 0u;
-    return true;
-  }
-
-  if (!ping_geometry_candidate && !uid_geometry_candidate) {
-    data->draw_call_vertex_count = 0u;
-    return false;
-  }
-
-  constexpr uint32_t PING_VERTEX_SHADER_HASH = 0xF4EF16E9u;
-  constexpr uint32_t PING_PIXEL_SHADER_HASH = 0xF1B0E28Au;
-
-  const bool latency_bar_draw_candidate = ping_geometry_candidate &&
-                                          (vertex_shader_hash == PING_VERTEX_SHADER_HASH) &&
-                                          (pixel_shader_hash == PING_PIXEL_SHADER_HASH);
-  data->is_ping_input_candidate = latency_bar_draw_candidate
-                               && data->draw_call_vertex_count == 0u;
-  data->latency_bar_draw_opacity = latency_bar_draw_candidate
-      ? shader_injection.ping_text_opacity
-      : 1.f;
-
-  if (latency_bar_draw_candidate) {
-    if (data->is_ping_input_candidate) {
-      data->is_ping_drawn = true;
-    }
-    data->draw_call_vertex_count = 0u;
-    return false;
-  }
-
-  // Detect UID text after the ping or post-combat shader
-  const bool uid_shader_candidate = pixel_shader_hash == 0xC2B8AB6Bu
-                                 || pixel_shader_hash == 0xECB4AA48u;
-  data->is_uid_input_candidate = uid_geometry_candidate
-                              && (data->is_ping_drawn || uid_shader_candidate);
-
-  // Reset vertex count after processing
-  data->draw_call_vertex_count = 0u;
-
-  if (!data->is_uid_input_candidate) {
-    return false;
-  }
-  if (!IsVisible(shader_injection.ui_visibility)) return true;
-
-  const bool show_uid_text = IsVisible(shader_injection.status_text_opacity);
-  const bool show_latency_text = IsVisible(shader_injection.latency_text_opacity);
-  if (show_uid_text && show_latency_text) return false;
-  if (!show_uid_text && !show_latency_text) return true;
-
-  DrawTextRegion(
-      cmd_list,
-      index_count,
-      instance_count,
-      first_index,
-      vertex_offset,
-      first_instance,
-      show_latency_text);
-  return true;
-}
-
-// Classify or consume UI draws before replacement callbacks inject or replay them.
-inline constexpr auto OnUiCommand = []<typename Arguments>(
-    renodx::utils::command_action::CommandContext<Arguments>& context)
-    -> renodx::utils::command_action::CallbackResult<
-        renodx::utils::command_action::CommandContext<Arguments>> {
-  if (!endfield::renderer::IsSupported(context.cmd_list->get_device())) return {};
-  if constexpr (std::is_same_v<Arguments, renodx::utils::command_action::DrawIndexedArguments>) {
-    return {.bypass = OnDrawIndexed(
-                context.cmd_list, context.arguments.index_count,
-                context.arguments.instance_count, context.arguments.first_index,
-                context.arguments.vertex_offset, context.arguments.first_instance)};
-  } else if constexpr (std::is_same_v<Arguments, renodx::utils::command_action::DrawArguments>) {
-    return {.bypass = OnDraw(
-                context.cmd_list, context.arguments.vertex_count,
-                context.arguments.instance_count, context.arguments.first_vertex,
-                context.arguments.first_instance)};
-  }
-  return {};
-};
-
 void OnPresent(reshade::api::command_queue* queue,
                reshade::api::swapchain* swapchain,
                const reshade::api::rect* source_rect,
@@ -1585,12 +1110,6 @@ void OnPresent(reshade::api::command_queue* queue,
   auto* device = queue->get_device();
   if (device->get_api() == reshade::api::device_api::opengl) {
     shader_injection.custom_flip_uv_y = 1.f;
-  }
-
-  // Compute UI aspect ratio from swapchain for dynamic latency bar detection
-  auto bb = device->get_resource_desc(swapchain->get_current_back_buffer());
-  if (bb.type != reshade::api::resource_type::unknown) {
-    shader_injection.ui_aspect_ratio = static_cast<float>(bb.texture.height) / static_cast<float>(bb.texture.width);
   }
 
   // Detect Tech Test state changes from preset loads, game startup, or manual toggle
@@ -1615,17 +1134,6 @@ void OnPresent(reshade::api::command_queue* queue,
     pending_tech_test_preset = -1;
   }
 
-  // Check UI visibility hotkey (skip if user is currently setting a new hotkey)
-  if (ui_toggle_hotkey != 0 && !hotkey_input_active) {
-    bool key_down = (GetAsyncKeyState(ui_toggle_hotkey) & 0x8000) != 0;
-    if (key_down && !ui_toggle_key_was_pressed) {
-      // Toggle UI visibility
-      shader_injection.ui_visibility = (shader_injection.ui_visibility == 0.f) ? 1.f : 0.f;
-      // Update the setting value to keep UI in sync
-      renodx::utils::settings::UpdateSetting("UIVisibility", shader_injection.ui_visibility);
-    }
-    ui_toggle_key_was_pressed = key_down;
-  }
 }
 
 bool initialized = false;
@@ -1735,14 +1243,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           settings.push_back(setting);
         }
 
-        // Load UI visibility hotkey from saved config
-        {
-          int saved_hotkey = 0;
-          if (reshade::get_config_value(nullptr, renodx::utils::settings::global_name.c_str(), "UIVisibilityHotkey", saved_hotkey)) {
-            ui_toggle_hotkey = saved_hotkey;
-          }
-        }
-
         {
           auto* setting = new renodx::utils::settings::Setting{
               .key = "SwapChainDeviceProxyBaseWaitIdle",
@@ -1776,7 +1276,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
               renodx::mods::swapchain::device_proxy_wait_idle_destination = (setting->GetValue() == 1.f);
           settings.push_back(setting);
         }
-
 
         for (const auto format : {reshade::api::format::r8g8b8a8_typeless,
                                   reshade::api::format::r8g8b8a8_unorm}) {
@@ -1878,44 +1377,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           }
         }
 
-        // UI visibility shaders
-        const uint32_t ui_visibility_bypass_crcs[] = {
-            // Endfield 1.5 UI permutations, matched to the fixed Vulkan UI paths.
-            0xF3506A1Fu,
-            0x45D804E5u,
-            0xCC7DD71Au,
-            0xECB4AA48u,
-            0x5278B104u,
-            0xB7010B10u,
-            0xC954C30Bu,
-            0xE4D1754Au,
-            0xFB0D02ADu,
-            0x3A8D5F08u,
-            0xF16C9B1Fu,
-            0xD4922925u,
-            0x0FB686BDu,
-        };
-        for (uint32_t crc : ui_visibility_bypass_crcs) {
-          RegisterUiVisibilityBypassShader(crc);
-        }
-
-        // Post-combat UID shader
-        RegisterUidBypassShader(0xC2B8AB6Bu);
-
-        // Ping/latency bar shader
-        {
-          auto it = custom_shaders.find(0xF1B0E28Au);
-          if (it != custom_shaders.end()) {
-            it->second.on_inject = OnLatencyBarInject;
-          }
-        }
-        {
-          auto it = custom_shaders.find(0xF1B0E28Au);
-          if (it != custom_shaders.end()) {
-            it->second.on_draw = OnPingDraw;
-          }
-        }
-        // Track resources and command-list state used by VFX and UI classification.
+        // Track resources and command-list state used by VFX classification.
         reshade::register_event<reshade::addon_event::init_command_list>(OnInitVfxCommandList);
         reshade::register_event<reshade::addon_event::reset_command_list>(OnResetVfxCommandList);
         reshade::register_event<reshade::addon_event::destroy_command_list>(OnDestroyVfxCommandList);
@@ -1950,12 +1412,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
   endfield::renderer::UseOverlay(fdw_reason);
   renodx::mods::swapchain::Use(fdw_reason, &shader_injection);
-  if (fdw_reason == DLL_PROCESS_ATTACH) {
-    renodx::utils::command_action::Register(
-        OnUiCommand, {.command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
-  } else if (fdw_reason == DLL_PROCESS_DETACH) {
-    renodx::utils::command_action::Unregister(OnUiCommand);
-  }
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
   renodx::utils::state::Use(fdw_reason);
   endfield::renderer::UseRuntimeEvents(fdw_reason);
