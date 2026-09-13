@@ -23,6 +23,8 @@ inline double motion_time = 0;
 inline int motion_frame = -1;
 inline Quat frame_start_offset{0,0,0,1};
 inline float frame_alpha = 0.f;
+inline bool following_interaction = false;
+inline float interaction_body_yaw = 0.f;
 inline Vec3 head_forward{}, head_up{}, body_forward{}, body_up{};
 
 inline void RestoreControlView() {
@@ -45,6 +47,38 @@ inline void Reset() {
   animation_offset = {0,0,0,1};
   motion_time = 0;
   motion_frame = -1;
+  following_interaction = false;
+}
+
+inline bool AlignInteraction(void* controller, Quat* view) {
+  if (!movement::interaction_alignment || !model_root) {
+    following_interaction = false;
+    return false;
+  }
+  void* transform = Invoke(transform_method,gc_target(model_root));
+  void* rotation = transform ? Invoke(movement::world_rotation,transform) : nullptr;
+  void* param = Invoke(dialogue::camera_param,controller);
+  void* horizontal = param ? Invoke(dialogue::horizontal,param) : nullptr;
+  if (!rotation || !horizontal || !dialogue::set_horizontal) return false;
+  const Quat body = *static_cast<Quat*>(object_unbox(rotation));
+  if (!Unit(body)) return false;
+  const Vec3 forward = Rotate(body,{0,0,1}), look = Rotate(*view,{0,0,1});
+  const float yaw = std::atan2(forward.x,forward.z)*57.295779513f;
+  const float delta = std::remainder(yaw-(following_interaction ? interaction_body_yaw
+      : std::atan2(look.x,look.z)*57.295779513f),360.f);
+  float angle = *static_cast<float*>(object_unbox(horizontal))+delta;
+  if (!std::isfinite(angle)) return false;
+  bool tween = false;
+  void* args[]{&angle,&tween};
+  void* exception = nullptr;
+  runtime_invoke(dialogue::set_horizontal,param,args,&exception);
+  if (exception) return false;
+  // Align once, then carry only changes in the interaction's body heading.
+  // Mouse look remains free after the body has reached the seat's facing.
+  *view = AxisAngle({0,1,0},delta)*(*view);
+  interaction_body_yaw = yaw;
+  following_interaction = true;
+  return true;
 }
 
 inline void Capture(void* brain, bool active, bool preserve_direction, const Quat& control_view) {
@@ -224,6 +258,7 @@ inline void HookedInputTick(void* manager, float dt, MethodInfo* method) {
   // The next gameplay camera update must read control facing, not last frame's
   // animated render rotation. Do not undo another camera owner's later write.
   RestoreControlView();
+  movement::RestoreSimulationPose();
   input_tick(manager,dt,method);
 }
 

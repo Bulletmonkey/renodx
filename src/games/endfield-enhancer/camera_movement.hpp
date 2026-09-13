@@ -1,14 +1,24 @@
 #pragma once
 
 // Included inside camera::detail. Presentation only: native locomotion, root
-// motion, gameplay rotation, Animator controllers and IK remain game-owned.
+// motion, gameplay rotation and IK remain game-owned. Lateral reversals may
+// interrupt native locomotion turn states; no clips are replaced.
 namespace movement {
 inline std::atomic<DWORD> game_thread{0};
 inline std::atomic_bool attached{false};
 inline Il2CppMethod started, released, paused, cinematic, get_movement, manual_move;
+inline Il2CppMethod animated_move, block_movement, base_controller, script_controlled;
+inline Il2CppMethod player_controller, raw_move_axis;
+struct MoveAxes { float x, y; };
+inline void* character_controller_class = nullptr;
+inline bool (*assignable)(void*,void*) = nullptr;
 inline size_t input_offset = 0;
 inline float lateral_yaw = 0.f;
 inline float held_yaw = 0.f;
+inline bool interaction_alignment = false;
+inline float lateral_target = 0.f;
+inline float turn_start = 0.f, turn_time = .35f;
+inline float turn_velocity = 0.f, turn_start_velocity = 0.f;
 inline double facing_time = 0;
 inline Il2CppMethod get_component, get_animator, component_transform, find_transform, parent_transform;
 inline Il2CppMethod local_rotation, world_rotation, set_local_rotation, set_world_rotation, object_alive;
@@ -58,6 +68,7 @@ struct Root {
   void* Get() const { return handle ? gc_target(handle) : nullptr; }
 };
 inline Root visual_entity, visual_transform;
+#include "./camera_locomotion.hpp"
 inline Quat original_visual{0, 0, 0, 1}, written_visual{0, 0, 0, 1};
 inline bool Alive(void* object) {
   if (!object) return false;
@@ -68,16 +79,30 @@ inline bool Alive(void* object) {
 inline bool SameRotation(Quat a, Quat b) {
   return Unit(a) && Unit(b) && std::abs(a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w) > .99999f;
 }
-inline bool RestoreVisual() {
+inline bool RestoreSimulationPose() {
   try {
     if (Alive(visual_transform.Get()) && SameRotation(Value<Quat>(local_rotation, visual_transform.Get()), written_visual)) {
       void* args[]{&original_visual};
       Call(set_local_rotation, visual_transform.Get(), args);
     }
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+inline bool RestoreVisual() {
+  try {
+    if (!RestoreSimulationPose()) return false;
     visual_transform = Root();
     visual_entity = Root();
     attached = false;
     lateral_yaw = 0.f;
+    lateral_target = 0.f;
+    turn_start = 0.f;
+    turn_time = .35f;
+    turn_velocity = turn_start_velocity = 0.f;
+    locomotion::reversed = false;
+    locomotion::blend_target = 0;
     held_yaw = 0.f;
     facing_time = 0;
     return true;
@@ -88,11 +113,29 @@ inline bool RestoreVisual() {
 inline void Release() { RestoreVisual(); }
 inline void Update(bool active, Vec3 view, float look_limit = 60.f) {
   game_thread = GetCurrentThreadId();
+  interaction_alignment = false;
   try {
     Root entity(active ? Call(character_method) : nullptr);
     if (!entity.Get() || !Value<bool>(started, entity.Get()) || Value<bool>(released, entity.Get())
         || Value<bool>(paused, entity.Get()) || Value<bool>(cinematic, entity.Get())
         || !Finite(view) || std::hypot(view.x, view.z) < .001f) {
+      Release();
+      return;
+    }
+    Root controller(Call(base_controller,entity.Get()));
+    Root movement(Call(get_movement,entity.Get()));
+    Root input(movement.Get() ? Read<void*>(movement.Get(),input_offset) : nullptr);
+    // Interaction alignment and scripted root motion own the skeleton, even
+    // when their camera remains the normal gameplay camera. Zero manual input
+    // is not enough to classify them as idle free-look locomotion.
+    if (!controller.Get() || !movement.Get() || !input.Get()
+        || !assignable(character_controller_class,object_class(controller.Get()))) {
+      Release();
+      return;
+    }
+    interaction_alignment = Value<bool>(script_controlled,controller.Get()) || Value<bool>(block_movement,movement.Get());
+    if (interaction_alignment || Value<bool>(animated_move,input.Get())) {
+      if (attached) Log(reshade::log::level::info,"Endfield enhancer: released first-person facing for scripted or locked movement");
       Release();
       return;
     }
@@ -126,22 +169,58 @@ inline void Update(bool active, Vec3 view, float look_limit = 60.f) {
       return;
     }
     if (!SameRotation(local, written_visual)) original_visual = local;
-    Root movement(Call(get_movement, visual_entity.Get()));
-    Root input(movement.Get() ? Read<void*>(movement.Get(), input_offset) : nullptr);
-    const Vec3 move = input.Get() ? Value<Vec3>(manual_move, input.Get()) : Vec3{};
+    Root player(Call(player_controller));
+    if (!player.Get()) { Release(); return; }
+    const MoveAxes axes = Value<MoveAxes>(raw_move_axis,player.Get());
+    // Use camera-space player intent, not the world vector consumed by native
+    // turn animations. That vector can lag or cross the backwards sector.
+    const Vec3 move{axes.x,0,axes.y};
     const double now = ClockSeconds();
     const float elapsed = facing_time ? std::clamp(float(now - facing_time), 0.f, .1f) : 0.f;
     facing_time = now;
     const float view_yaw = std::atan2(view.x, view.z) * 57.295779513f;
     if (!attached) held_yaw = view_yaw;
     if (Finite(move) && std::hypot(move.x, move.z) > .01f) {
-      lateral_yaw += (LateralFacingYaw(move, view) - lateral_yaw) * (1.f - std::exp(-12.f * elapsed));
+      const float target = LateralFacingYaw(move,{0,0,1});
+      const bool changed_side = target*lateral_target < 0.f && std::abs(target)>5.f && std::abs(lateral_target)>5.f;
+      if (changed_side) {
+        locomotion::reversed = true;
+      }
+      if (std::abs(target-lateral_target)>.1f) {
+        turn_start = lateral_yaw;
+        turn_start_velocity = turn_velocity;
+        turn_time = 0.f;
+      }
+      lateral_target = target;
+      if (std::abs(target)<5.f) { locomotion::reversed=false; locomotion::blend_target=0; }
+      locomotion::InterruptTurn(animator.Get(),changed_side);
+      // Blend the rendered body itself. Animator crossfades cannot smooth this
+      // skeleton-root yaw, and exponential easing spends most of its motion
+      // in the first few frames. Retarget from the currently displayed angle.
+      if (turn_time < .35f) {
+        turn_time = std::min(turn_time+elapsed,.35f);
+        const float t = turn_time/.35f;
+        // Hermite interpolation retains angular velocity when a new input
+        // interrupts the turn, then reaches the new target at zero velocity.
+        lateral_yaw = turn_start+(target-turn_start)*(t*t*(3.f-2.f*t))
+                      +.35f*turn_start_velocity*t*(1.f-t)*(1.f-t);
+        turn_velocity = (target-turn_start)*(6.f*t*(1.f-t)/.35f)
+                        +turn_start_velocity*(1.f-4.f*t+3.f*t*t);
+      } else {
+        lateral_yaw += (target-lateral_yaw)*(-std::expm1(-16.f*elapsed));
+        turn_velocity = 16.f*(target-lateral_yaw);
+      }
       held_yaw = view_yaw + lateral_yaw;
     } else {
       // Keep the last visual heading on release, including the sidestep angle.
       // Only carry the body along once the camera reaches the idle look limit.
       held_yaw = view_yaw - std::clamp(std::remainder(view_yaw - held_yaw, 360.f), -look_limit, look_limit);
       lateral_yaw = std::remainder(held_yaw - view_yaw, 360.f);
+      lateral_target = 0.f;
+      turn_time = .35f;
+      turn_velocity = turn_start_velocity = 0.f;
+      locomotion::reversed = false;
+      locomotion::blend_target = 0;
     }
     const Vec3 facing = Rotate(world, {0, 0, 1});
     Quat wanted = AxisAngle({0, 1, 0}, std::remainder(held_yaw - std::atan2(facing.x, facing.z) * 57.295779513f, 360.f)) * world;
@@ -163,12 +242,28 @@ inline bool Resolve(Il2CppImage game, int32_t (*value_size)(void*, uint32_t*), v
       || !ResolveExport(module, "il2cpp_field_get_type", &field_type)
       || !ResolveExport(module, "il2cpp_string_new", &new_string)) return false;
   const auto unity = FindImage("UnityEngine.CoreModule.dll"), animation = FindImage("UnityEngine.AnimationModule.dll");
-  if (!unity || !animation) return false;
+  if (!unity || !animation || !locomotion::Resolve(animation)) return false;
+  player_controller = FindMethod(game,"Beyond.Gameplay","GameInstance","get_playerController",0);
+  raw_move_axis = FindMethod(game,"Beyond.Gameplay.Core","PlayerController","get_rawMoveAxis",0);
+  if (!player_controller || !raw_move_axis) return false;
+  uint32_t axes_alignment = 0;
+  if (class_from_type(return_type(player_controller)) != class_from_name(game,"Beyond.Gameplay.Core","PlayerController")
+      || class_from_type(return_type(raw_move_axis)) != class_from_name(unity,"UnityEngine","Vector2")
+      || value_size(class_from_type(return_type(raw_move_axis)),&axes_alignment) != sizeof(MoveAxes)) return false;
   started = FindMethod(game, "Beyond.Gameplay.Core", "Entity", "get_markStarted", 0);
   released = FindMethod(game, "Beyond.Gameplay.Core", "Entity", "get_markReleased", 0);
   paused = FindMethod(game, "Beyond.Gameplay.Core", "Entity", "get_isPaused", 0);
   get_movement = FindMethod(game, "Beyond.Gameplay.Core", "Entity", "get_movementComponent", 0);
   manual_move = FindMethod(game, "Beyond.Gameplay.Core", "MoveInput", "get_manualMoveVector", 0);
+  animated_move = FindMethod(game,"Beyond.Gameplay.Core","MoveInput","get_hasAnimatedMove",0);
+  block_movement = FindMethod(game,"Beyond.Gameplay.Core","MovementComponent","get_blockGroundedMove",0);
+  base_controller = FindMethod(game,"Beyond.Gameplay.Core","Entity","get_baseController",0);
+  script_controlled = FindMethod(game,"Beyond.Gameplay.Core","CharacterController","get_isScriptControlled",0);
+  character_controller_class = class_from_name(game,"Beyond.Gameplay.Core","CharacterController");
+  if (!character_controller_class || !ResolveExport(module,"il2cpp_class_is_assignable_from",&assignable)) return false;
+  for (auto method : {animated_move,block_movement,script_controlled})
+    if (!method || class_from_type(return_type(method)) != class_from_name(FindImage("mscorlib.dll"),"System","Boolean")) return false;
+  if (!base_controller) return false;
   void* input_field = class_get_field_from_name(class_from_name(game, "Beyond.Gameplay.Core", "MovementComponent"), "input");
   if (!input_field || class_from_type(field_type(input_field)) != class_from_name(game, "Beyond.Gameplay.Core", "MoveInput")) return false;
   input_offset = field_get_offset(input_field);

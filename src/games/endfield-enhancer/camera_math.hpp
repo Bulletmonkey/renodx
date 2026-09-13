@@ -39,7 +39,7 @@ inline float LateralFacingYaw(Vec3 move, Vec3 view) {
   const float length = std::hypot(move.x,move.z)*std::hypot(view.x,view.z);
   if (!Finite(move) || !Finite(view) || length < .001f) return 0.f;
   const float side = std::clamp((move.x*view.z-move.z*view.x)/length,-1.f,1.f);
-  if (move.x*view.x + move.z*view.z < 0.f) {
+  if (move.x*view.x + move.z*view.z < -length*.382683432f) {
     // Use the straight-back sector of an eight-way input layout (22.5 degrees
     // each way). Movement and camera updates need not have identical headings.
     return std::abs(side) > .382683432f ? std::copysign(45.f, -side) : 0.f;

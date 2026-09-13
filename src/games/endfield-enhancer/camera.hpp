@@ -240,9 +240,9 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   if (conversation) {
     dialogue::was_conversation = true;
   }
-  const Quat view = orientation * adjusted_correction;
-  const Vec3 right = Rotate(view, {1, 0, 0});
-  const Vec3 forward = Rotate(view, {0, 0, 1});
+  Quat view = orientation * adjusted_correction;
+  Vec3 right = Rotate(view, {1, 0, 0});
+  Vec3 forward = Rotate(view, {0, 0, 1});
   bool first_person_active = false;
   if (v.first_person) {
     // Native photo first person hides the entire model; leave it under game control.
@@ -275,6 +275,14 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   movement::Update((first_person_active && v.first_person_movement && !conversation)
                        && object_class(controller) != photo_class,
                    forward, v.side_look_limit);
+  if (first_person_active && !conversation && !restored_dialogue_view
+      && (object_class(controller)==level_class || object_class(controller)==free_class)
+      && motion::AlignInteraction(controller,&view)) {
+    orientation = view;
+    adjusted_correction = {0,0,0,1};
+    right = Rotate(view,{1,0,0});
+    forward = Rotate(view,{0,0,1});
+  }
   if (first_person_active) {
     // Visual facing can move the animated head around the model pivot. Anchor
     // the submitted camera to its updated position in this same frame.
