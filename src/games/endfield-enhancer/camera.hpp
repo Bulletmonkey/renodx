@@ -60,6 +60,7 @@ inline void (*gc_free)(uint32_t) = nullptr;
 inline void* (*gc_target)(uint32_t) = nullptr;
 inline int32_t (*string_length)(void*) = nullptr;
 inline const wchar_t* (*string_chars)(void*) = nullptr;
+inline void* (*head_path_string)(const char*) = nullptr;
 inline void (*position_injected)(void*, Vec3*) = nullptr;
 inline void* manager_field = nullptr;
 inline void* photo_class = nullptr;
@@ -68,6 +69,7 @@ inline void* free_class = nullptr;
 inline Il2CppMethod controller_method = nullptr, brain_method = nullptr;
 inline Il2CppMethod character_method = nullptr, model_method = nullptr, model_go_method = nullptr;
 inline Il2CppMethod transform_method = nullptr, child_count_method = nullptr, child_method = nullptr, name_method = nullptr;
+inline Il2CppMethod head_path_method = nullptr;
 inline size_t native_first_person = 0, param_controller = 0;
 inline uint32_t head_root = 0, model_root = 0;
 inline unsigned retry_head = 0;
@@ -126,7 +128,21 @@ inline void* Head(void* controller) {
 }
 inline uint32_t FindHead(void* go) {
   uint32_t found = 0;
-  // Inspect this character's own hierarchy only, once on model/character change.
+  // Prefer the operator's exact rig path. Attached skill actors can also have
+  // head bones, and the recursive fallback visits later attachments first.
+  if (void* transform = Invoke(transform_method, go)) {
+    const uint32_t transform_root = gc_new(transform, false);
+    const uint32_t path_root = head_path_string ? gc_new(head_path_string(
+        "Root/Bip001/Bip001_Pelvis/Bip001_Spine/Bip001_Spine1/Bip001_Spine2/Bip001_Neck/Bip001_Head"), false) : 0;
+    if (transform_root && path_root) {
+      void* args[]{gc_target(path_root)};
+      if (void* head = Invoke(head_path_method, gc_target(transform_root), args)) found = gc_new(head, false);
+    }
+    if (path_root) gc_free(path_root);
+    if (transform_root) gc_free(transform_root);
+    if (found) return found;
+  }
+  // Alternate/NPC rigs retain the bounded hierarchy search.
   std::vector<uint32_t> pending;
   if (void* transform = Invoke(transform_method, go)) pending.push_back(gc_new(transform, false));
   unsigned visited = 0;
@@ -450,6 +466,8 @@ inline bool Resolve() {
   child_count_method = FindMethod(unity, "UnityEngine", "Transform", "get_childCount", 0);
   child_method = FindMethod(unity, "UnityEngine", "Transform", "GetChild", 1);
   name_method = FindMethod(unity, "UnityEngine", "Object", "get_name", 0);
+  head_path_method = FindMethod(unity, "UnityEngine", "Transform", "Find", 1);
+  if (!head_path_method || !ResolveExport(GetModuleHandleW(L"GameAssembly.dll"), "il2cpp_string_new", &head_path_string)) return false;
   if (!controller_method || !brain_method || !character_method || !model_method || !model_go_method
       || !transform_method || !child_count_method || !child_method || !name_method) return false;
   if (!(method_flags(character_method, nullptr) & 0x10)

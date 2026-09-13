@@ -1,5 +1,18 @@
 # First-person conversation model switching
 
+Head selection prefers the exact operator skeleton path
+`Root/Bip001/Bip001_Pelvis/Bip001_Spine/Bip001_Spine1/Bip001_Spine2/Bip001_Neck/Bip001_Head`
+before searching alternate NPC rigs. This prevents an attached skill actor's
+head from winning the recursive search when the operator rig is present.
+After restarting with the candidate, check Pogranichnik before, during, and
+after his ultimate, then switch away and back. Verify camera anchoring and
+Hide Head, plus an ordinary NPC conversation using the fallback lookup.
+Mocked lookup checks cover attachment ordering, alternate rigs, missing heads,
+the traversal limit, and handle cleanup. The user confirmed that the installed
+candidate fixes Pogranichnik's camera offset. Ultimate-phase and NPC fallback
+checks remain separate verification steps; the specific wrongly selected
+attachment was not captured at runtime.
+
 Build `endfield-enhancer` with the `clang-x64-release` build preset. Inspect
 `build/Release/renodx-endfield-enhancer.addon64`.
 
