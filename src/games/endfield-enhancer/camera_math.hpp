@@ -61,4 +61,44 @@ inline bool Unit(Quat q) {
   const float n = q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w;
   return std::isfinite(n) && n > 0.98f && n < 1.02f;
 }
+inline Quat BlendRotation(Quat from, Quat to, float amount) {
+  amount = std::clamp(amount,0.f,1.f);
+  if (from.x*to.x+from.y*to.y+from.z*to.z+from.w*to.w < 0.f)
+    to = {-to.x,-to.y,-to.z,-to.w};
+  Quat q{from.x+(to.x-from.x)*amount,from.y+(to.y-from.y)*amount,
+         from.z+(to.z-from.z)*amount,from.w+(to.w-from.w)*amount};
+  const float length = std::sqrt(q.x*q.x+q.y*q.y+q.z*q.z+q.w*q.w);
+  if (!std::isfinite(length) || length<.0001f) return from;
+  return {q.x/length,q.y/length,q.z/length,q.w/length};
+}
+// Build a camera rotation from an animated bone's corrected forward/up axes.
+inline bool FacingRotation(Vec3 forward, Vec3 up, Quat* result) {
+  const auto cross = [](Vec3 a, Vec3 b) { return Vec3{a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x}; };
+  const auto normalize = [](Vec3* v) {
+    const float length = std::sqrt(v->x*v->x+v->y*v->y+v->z*v->z);
+    if (!Finite(*v) || length < .0001f) return false;
+    *v = *v * (1.f/length); return true;
+  };
+  if (!normalize(&forward)) return false;
+  Vec3 right = cross(up,forward);
+  if (!normalize(&right)) return false;
+  up = cross(forward,right);
+  const float trace = right.x+up.y+forward.z;
+  Quat q{};
+  if (trace > 0.f) {
+    const float s = 2.f*std::sqrt(trace+1.f);
+    q = {(up.z-forward.y)/s,(forward.x-right.z)/s,(right.y-up.x)/s,s*.25f};
+  } else if (right.x > up.y && right.x > forward.z) {
+    const float s = 2.f*std::sqrt(1.f+right.x-up.y-forward.z);
+    q = {s*.25f,(up.x+right.y)/s,(forward.x+right.z)/s,(up.z-forward.y)/s};
+  } else if (up.y > forward.z) {
+    const float s = 2.f*std::sqrt(1.f+up.y-right.x-forward.z);
+    q = {(up.x+right.y)/s,s*.25f,(forward.y+up.z)/s,(forward.x-right.z)/s};
+  } else {
+    const float s = 2.f*std::sqrt(1.f+forward.z-right.x-up.y);
+    q = {(forward.x+right.z)/s,(forward.y+up.z)/s,s*.25f,(right.y-up.x)/s};
+  }
+  if (!Unit(q)) return false;
+  *result = q; return true;
+}
 }  // namespace endfield::camera

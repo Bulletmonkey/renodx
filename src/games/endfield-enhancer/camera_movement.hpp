@@ -9,10 +9,21 @@ inline Il2CppMethod started, released, paused, cinematic, get_movement, manual_m
 inline size_t input_offset = 0;
 inline float lateral_yaw = 0.f;
 inline float held_yaw = 0.f;
-inline ULONGLONG facing_time = 0;
+inline double facing_time = 0;
 inline Il2CppMethod get_component, get_animator, component_transform, find_transform, parent_transform;
 inline Il2CppMethod local_rotation, world_rotation, set_local_rotation, set_world_rotation, object_alive;
 inline void* (*new_string)(const char*) = nullptr;
+
+inline double ClockSeconds() {
+  static const double frequency = [] {
+    LARGE_INTEGER value{};
+    QueryPerformanceFrequency(&value);
+    return static_cast<double>(value.QuadPart);
+  }();
+  LARGE_INTEGER counter{};
+  QueryPerformanceCounter(&counter);
+  return static_cast<double>(counter.QuadPart)/frequency;
+}
 
 inline void* Call(Il2CppMethod method, void* object = nullptr, void** args = nullptr) {
   if (!method) throw std::runtime_error("Movement presentation API unavailable");
@@ -118,8 +129,8 @@ inline void Update(bool active, Vec3 view, float look_limit = 60.f) {
     Root movement(Call(get_movement, visual_entity.Get()));
     Root input(movement.Get() ? Read<void*>(movement.Get(), input_offset) : nullptr);
     const Vec3 move = input.Get() ? Value<Vec3>(manual_move, input.Get()) : Vec3{};
-    const ULONGLONG now = GetTickCount64();
-    const float elapsed = facing_time ? std::min(float(now - facing_time) * .001f, .1f) : 0.f;
+    const double now = ClockSeconds();
+    const float elapsed = facing_time ? std::clamp(float(now - facing_time), 0.f, .1f) : 0.f;
     facing_time = now;
     const float view_yaw = std::atan2(view.x, view.z) * 57.295779513f;
     if (!attached) held_yaw = view_yaw;

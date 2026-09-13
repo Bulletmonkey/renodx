@@ -25,6 +25,8 @@ inline float extend_look_range = 0.f;
 inline float first_person_movement = 0.f;
 inline float side_look_limit = 60.f;
 inline float first_person_dialogue = 0.f;
+inline float animation_facing = 0.f;
+inline float animation_motion = 35.f;
 inline bool unavailable = false;
 inline float hide_head=0.f, fill_neck_hole=0.f;
 inline std::atomic_int status = 0;
@@ -38,6 +40,8 @@ struct Values {
   bool first_person_movement;
   float side_look_limit;
   bool first_person_dialogue;
+  bool body_facing, head_facing, realism;
+  float animation_motion;
 };
 inline Values values{};
 inline SRWLOCK values_lock = SRWLOCK_INIT;
@@ -46,8 +50,8 @@ using PushState = void (*)(void*, void*, MethodInfo*);
 using GetFloat = float (*)(void*, MethodInfo*);
 inline PushState push_state = nullptr;
 inline GetFloat param_max = nullptr, body_max = nullptr;
-inline std::array<void*, 4> entries{};
-inline std::array<std::array<uint8_t, 16>, 4> patched{};
+inline std::array<void*, 6> entries{};
+inline std::array<std::array<uint8_t, 16>, 6> patched{};
 inline void (*static_get)(void*, void*) = nullptr;
 inline void* (*object_class)(void*) = nullptr;
 inline uint32_t (*gc_new)(void*, bool) = nullptr;
@@ -95,7 +99,9 @@ inline void* Context(const Values& v, void** manager = nullptr) {
         || (v.gameplay && v.first_person && v.first_person_dialogue && dialogue::Eligible(controller)))) return nullptr;
   return controller;
 }
+namespace motion { inline void Reset(); }
 inline void ReleaseHead() {
+  motion::Reset();
   if (head_root) gc_free(head_root);
   if (model_root) gc_free(model_root);
   head_root = model_root = 0;
@@ -160,6 +166,7 @@ inline void Write(void* state, size_t offset, T value) {
 
 #include "./camera_mesh_runtime.hpp"
 #include "./camera_movement.hpp"
+#include "./camera_motion.hpp"
 
 inline void HookedPush(void* brain, void* state, MethodInfo* method) {
   const Values v = ReadValues();
@@ -298,6 +305,9 @@ inline void HookedPush(void* brain, void* state, MethodInfo* method) {
     }
   }
   push_state(brain, copy.data(), method);
+  motion::Capture(brain, first_person_active, conversation || restored_dialogue_view,
+                  view * AxisAngle({0,0,1},Read<float>(copy.data(),0x30)));
+  if (motion::camera_root) motion::Apply(gc_target(motion::camera_root));
 }
 inline float HookedParamMax(void* param, MethodInfo* method) {
   const float original = param_max(param, method);
@@ -333,6 +343,8 @@ inline bool UpdateHooks(bool attach) {
       if (ready) ready = (attach ? DetourAttach(&push_state, HookedPush) : DetourDetach(&push_state, HookedPush)) == NO_ERROR
                          && (attach ? DetourAttach(&param_max, HookedParamMax) : DetourDetach(&param_max, HookedParamMax)) == NO_ERROR
                          && (attach ? DetourAttach(&body_max, HookedBodyMax) : DetourDetach(&body_max, HookedBodyMax)) == NO_ERROR
+                         && (attach ? DetourAttach(&motion::tail_tick, motion::HookedTailTick) : DetourDetach(&motion::tail_tick, motion::HookedTailTick)) == NO_ERROR
+                         && (attach ? DetourAttach(&motion::input_tick, motion::HookedInputTick) : DetourDetach(&motion::input_tick, motion::HookedInputTick)) == NO_ERROR
                          && (attach ? DetourAttach(&mesh_runtime::native_awake, mesh_runtime::HookedMeshAwake) : DetourDetach(&mesh_runtime::native_awake, mesh_runtime::HookedMeshAwake)) == NO_ERROR;
       if (ready) ready = DetourTransactionCommit() == NO_ERROR;
       else DetourTransactionAbort();
@@ -421,30 +433,46 @@ inline bool Resolve() {
   auto* max = static_cast<MethodInfo*>(FindMethod(game, "Beyond.Gameplay.View", "CameraControlParam", "get_maxZoom", 0));
   auto* body = static_cast<MethodInfo*>(FindMethod(game, "Beyond.Gameplay.View", "Dynamic3rdPersonFollow", "get_ZoomScaleMax", 0));
   if (!push || !max || !body) return false;
-  entries = {push->method_pointer, max->method_pointer, body->method_pointer};
-  constexpr std::array<size_t, 3> rvas{0x3224f20, 0x35c85c0, 0x5ee8264};
-  constexpr std::array<std::array<uint8_t, 16>, 3> signatures{{
+  auto* tail_tick = static_cast<MethodInfo*>(FindMethod(game, "Beyond.Gameplay.View", "CameraManager", "TailLateTick", 1));
+  auto* input_tick = static_cast<MethodInfo*>(FindMethod(game, "Beyond.Gameplay.View", "CameraManager", "Tick", 1));
+  const void* (*parameter_type)(Il2CppMethod, uint32_t) = nullptr;
+  if (!ResolveExport(module, "il2cpp_method_get_param", &parameter_type)) return false;
+  for (auto* tick : {tail_tick,input_tick})
+    if (!tick || (method_flags(tick,nullptr) & 0x10)
+        || class_from_type(parameter_type(tick,0)) != class_from_name(FindImage("mscorlib.dll"),"System","Single")
+        || class_from_type(return_type(tick)) != class_from_name(FindImage("mscorlib.dll"),"System","Void")) return false;
+  entries = {push->method_pointer, max->method_pointer, body->method_pointer, tail_tick->method_pointer, input_tick->method_pointer};
+  constexpr std::array<size_t, 5> rvas{0x3224f20, 0x35c85c0, 0x5ee8264, 0x3d7a970, 0x3222180};
+  constexpr std::array<std::array<uint8_t, 32>, 5> signatures{{
       {0x40,0x55,0x53,0x57,0x48,0x8d,0xac,0x24,0x70,0xff,0xff,0xff,0x48,0x81,0xec,0x90},
       {0x40,0x57,0x48,0x83,0xec,0x30,0x48,0x8b,0xf9,0x48,0x8b,0x0d,0xc0,0xaf,0xa2,0x09},
-      {0x40,0x53,0x48,0x83,0xec,0x20,0x80,0x3d,0x37,0x75,0xfd,0x07,0x00,0x48,0x8b,0xd9}}};
+      {0x40,0x53,0x48,0x83,0xec,0x20,0x80,0x3d,0x37,0x75,0xfd,0x07,0x00,0x48,0x8b,0xd9},
+      {0x40,0x53,0x48,0x83,0xec,0x30,0x48,0x8b,0xd9,0x0f,0x29,0x74,0x24,0x20,0x48,0x8b,
+       0x0d,0x0b,0x8c,0x27,0x09,0x0f,0x28,0xf1,0x83,0xb9,0xe0,0x00,0x00,0x00,0x00,0x74},
+      {0x40,0x57,0x48,0x83,0xec,0x30,0x48,0x8b,0xf9,0x0f,0x29,0x74,0x24,0x20,0x48,0x8b,
+       0x0d,0xfb,0x13,0xdd,0x09,0x0f,0x28,0xf1,0x83,0xb9,0xe0,0x00,0x00,0x00,0x00,0x0f}}};
   const auto* base = reinterpret_cast<const uint8_t*>(module);
   const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
   const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
   for (size_t i = 0; i < rvas.size(); ++i) {
-    if (entries[i] != base + rvas[i] || std::memcmp(entries[i], signatures[i].data(), 16)) return false;
+    const size_t signature_size = i >= 3 ? 32 : 16;
+    if (entries[i] != base + rvas[i] || std::memcmp(entries[i], signatures[i].data(), signature_size)) return false;
     unsigned matches = 0;
     const auto* sections = IMAGE_FIRST_SECTION(nt);
     for (unsigned j = 0; j < nt->FileHeader.NumberOfSections; ++j) {
       if (!(sections[j].Characteristics & IMAGE_SCN_MEM_EXECUTE)) continue;
       const auto* begin = base + sections[j].VirtualAddress;
       const auto* end = begin + sections[j].Misc.VirtualSize;
-      for (const auto* at = begin; (at = std::search(at, end, signatures[i].begin(), signatures[i].end())) != end; ++at) ++matches;
+      for (const auto* at = begin; (at = std::search(at, end, signatures[i].begin(), signatures[i].begin()+signature_size)) != end; ++at) ++matches;
     }
     if (matches != 1) return false;
   }
   if (!movement::Resolve(game, value_size, class_from_type)) return false;
+  if (!motion::Resolve(unity, cine, icall)) return false;
   if (!mesh_runtime::ResolveCloneAwake(icall)) return false;
-  entries[3] = reinterpret_cast<void*>(mesh_runtime::native_awake);
+  entries[5] = reinterpret_cast<void*>(mesh_runtime::native_awake);
+  motion::tail_tick = reinterpret_cast<motion::CameraTick>(entries[3]);
+  motion::input_tick = reinterpret_cast<motion::CameraTick>(entries[4]);
   push_state = reinterpret_cast<PushState>(entries[0]);
   param_max = reinterpret_cast<GetFloat>(entries[1]);
   body_max = reinterpret_cast<GetFloat>(entries[2]);
@@ -467,7 +495,10 @@ inline void OnPresent() {
             clamp(eye_height,-0.5f,0.5f,0.05f), clamp(eye_forward,0,0.5f,0.03f),
             extend_look_range >= 0.5f ? 1.10f : 1.f, extend_look_range >= 0.5f ? 1.50f : 1.f,
             clamp(first_person_fov,20,120,60), first_person_movement >= 0.5f,
-            clamp(side_look_limit,0,90,60), first_person_dialogue >= .5f};
+            clamp(side_look_limit,0,90,60), first_person_dialogue >= .5f,
+            animation_facing >= .5f && animation_facing < 1.5f,
+            animation_facing >= 1.5f && animation_facing < 2.5f,
+            animation_facing >= 2.5f, clamp(animation_motion,0,100,35)*.01f};
   ReleaseSRWLockExclusive(&values_lock);
   if (installed || unavailable || enabled < 0.5f || shutting_down.load(std::memory_order_relaxed)) return;
   if (present_count != 1 && present_count % 120 != 0) return;
