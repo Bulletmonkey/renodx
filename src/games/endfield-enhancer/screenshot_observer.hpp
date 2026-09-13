@@ -1,6 +1,6 @@
 #pragma once
 #include <Windows.h>
-#include <TlHelp32.h>
+#include "./native_hooks.hpp"
 #include <detours.h>
 #include <include/reshade.hpp>
 #include <array>
@@ -116,40 +116,12 @@ inline bool ReadColor(ColorConfig* config) {
   return true;
 }
 inline bool ChangeHooks(bool attach, bool device_hooks) {
-  std::vector<HANDLE> threads;
-  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-  THREADENTRY32 entry{sizeof(entry)};
-  bool ok = snapshot != INVALID_HANDLE_VALUE && Thread32First(snapshot, &entry);
-  if (ok) do {
-      if (entry.th32OwnerProcessID != GetCurrentProcessId() || entry.th32ThreadID == GetCurrentThreadId()) continue;
-      HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, entry.th32ThreadID);
-      if (thread)
-        threads.push_back(thread);
-      else if (GetLastError() != ERROR_INVALID_PARAMETER) {
-        ok = false;
-        break;
-      }
-    } while (Thread32Next(snapshot, &entry));
-  if (snapshot != INVALID_HANDLE_VALUE) CloseHandle(snapshot);
-  if (ok && DetourTransactionBegin() == NO_ERROR) {
-    for (HANDLE thread : threads)
-      if (DetourUpdateThread(thread) != NO_ERROR) {
-        ok = false;
-        break;
-      }
-    if (device_hooks) {
-      if (ok) ok = (attach ? DetourAttach(&create_pipeline, HookCreatePipeline) : DetourDetach(&create_pipeline, HookCreatePipeline)) == NO_ERROR;
-      if (ok) ok = (attach ? DetourAttach(&destroy_layout, HookDestroyLayout) : DetourDetach(&destroy_layout, HookDestroyLayout)) == NO_ERROR;
-    } else if (ok)
-      ok = (attach ? DetourAttach(&push_constants, HookPushConstants) : DetourDetach(&push_constants, HookPushConstants)) == NO_ERROR;
-    if (ok)
-      ok = DetourTransactionCommit() == NO_ERROR;
-    else
-      DetourTransactionAbort();
-  } else
-    ok = false;
-  for (HANDLE thread : threads) CloseHandle(thread);
-  return ok;
+  return native_hooks::Update(attach ? "Screenshot observer install" : "Screenshot observer removal", [attach, device_hooks]() -> LONG {
+    if (!device_hooks) return attach ? DetourAttach(&push_constants, HookPushConstants) : DetourDetach(&push_constants, HookPushConstants);
+    LONG result = attach ? DetourAttach(&create_pipeline, HookCreatePipeline) : DetourDetach(&create_pipeline, HookCreatePipeline);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&destroy_layout, HookDestroyLayout) : DetourDetach(&destroy_layout, HookDestroyLayout);
+    return result;
+  });
 }
 inline bool IsHostFunction(const void* address) {
   MEMORY_BASIC_INFORMATION info{};

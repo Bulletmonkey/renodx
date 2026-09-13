@@ -11,7 +11,7 @@
 #include <array>
 #include <cwctype>
 #include <string>
-#include <TlHelp32.h>
+#include "./native_hooks.hpp"
 
 #include "./camera_math.hpp"
 #include "./npc_distance.hpp"
@@ -365,44 +365,15 @@ inline float HookedBodyMax(void* body, MethodInfo* method) {
 }
 
 inline bool UpdateHooks(bool attach) {
-  std::vector<HANDLE> threads;
-  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-  THREADENTRY32 entry{sizeof(entry)};
-  bool ready = snapshot != INVALID_HANDLE_VALUE && Thread32First(snapshot, &entry);
-  if (ready) do {
-      if (entry.th32OwnerProcessID != GetCurrentProcessId() || entry.th32ThreadID == GetCurrentThreadId()) continue;
-      HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION,
-                                 FALSE, entry.th32ThreadID);
-      if (!thread) {
-        if (GetLastError() == ERROR_INVALID_PARAMETER) continue;
-        ready = false;
-        break;
-      }
-      threads.push_back(thread);
-    } while (Thread32Next(snapshot, &entry));
-  if (snapshot != INVALID_HANDLE_VALUE) CloseHandle(snapshot);
-  if (ready) {
-    ready = DetourTransactionBegin() == NO_ERROR;
-    if (ready) {
-      for (HANDLE thread : threads)
-        if (DetourUpdateThread(thread) != NO_ERROR) {
-          ready = false;
-          break;
-        }
-      if (ready) ready = (attach ? DetourAttach(&push_state, HookedPush) : DetourDetach(&push_state, HookedPush)) == NO_ERROR
-                         && (attach ? DetourAttach(&param_max, HookedParamMax) : DetourDetach(&param_max, HookedParamMax)) == NO_ERROR
-                         && (attach ? DetourAttach(&body_max, HookedBodyMax) : DetourDetach(&body_max, HookedBodyMax)) == NO_ERROR
-                         && (attach ? DetourAttach(&motion::tail_tick, motion::HookedTailTick) : DetourDetach(&motion::tail_tick, motion::HookedTailTick)) == NO_ERROR
-                         && (attach ? DetourAttach(&motion::input_tick, motion::HookedInputTick) : DetourDetach(&motion::input_tick, motion::HookedInputTick)) == NO_ERROR
-                         && (attach ? DetourAttach(&mesh_runtime::native_awake, mesh_runtime::HookedMeshAwake) : DetourDetach(&mesh_runtime::native_awake, mesh_runtime::HookedMeshAwake)) == NO_ERROR;
-      if (ready)
-        ready = DetourTransactionCommit() == NO_ERROR;
-      else
-        DetourTransactionAbort();
-    }
-  }
-  for (HANDLE thread : threads) CloseHandle(thread);
-  return ready;
+  return native_hooks::Update(attach ? "Camera install" : "Camera removal", [attach]() -> LONG {
+    LONG result = attach ? DetourAttach(&push_state, HookedPush) : DetourDetach(&push_state, HookedPush);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&param_max, HookedParamMax) : DetourDetach(&param_max, HookedParamMax);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&body_max, HookedBodyMax) : DetourDetach(&body_max, HookedBodyMax);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&motion::tail_tick, motion::HookedTailTick) : DetourDetach(&motion::tail_tick, motion::HookedTailTick);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&motion::input_tick, motion::HookedInputTick) : DetourDetach(&motion::input_tick, motion::HookedInputTick);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&mesh_runtime::native_awake, mesh_runtime::HookedMeshAwake) : DetourDetach(&mesh_runtime::native_awake, mesh_runtime::HookedMeshAwake);
+    return result;
+  });
 }
 
 inline bool Resolve() {
@@ -554,12 +525,15 @@ inline void OnPresent() {
   if (installed || unavailable || enabled < 0.5f || shutting_down.load(std::memory_order_relaxed)) return;
   if (present_count != 1 && present_count % 120 != 0) return;
   if (!ResolveApi() || !FindImage("Gameplay.Beyond.dll")) return;
-  if (!Resolve() || !UpdateHooks(true)) {
+  const bool resolved = Resolve();
+  if (!resolved || !UpdateHooks(true)) {
     unavailable = true;
     AcquireSRWLockExclusive(&values_lock);
     values.enabled = false;
     ReleaseSRWLockExclusive(&values_lock);
-    Log(reshade::log::level::warning, "Endfield enhancer: Camera methods or layout unsupported; camera hooks refused.");
+    Log(reshade::log::level::warning, resolved
+                                          ? "Endfield enhancer: Camera hook installation failed; camera controls disabled."
+                                          : "Endfield enhancer: Camera methods or layout unsupported; camera hooks refused.");
     return;
   }
   for (size_t i = 0; i < entries.size(); ++i) std::memcpy(patched[i].data(), entries[i], patched[i].size());

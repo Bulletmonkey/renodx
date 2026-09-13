@@ -15,6 +15,7 @@
 #include <include/reshade.hpp>
 
 #include "./hdr_output.hpp"
+#include "./native_hooks.hpp"
 #include "./render_quality.hpp"
 #include "./ssr_depth.hpp"
 
@@ -489,7 +490,7 @@ inline bool InstallSsrResolutionHook() {
     Log(reshade::log::level::warning,
         "Endfield enhancer: obsolete Double SSR selection is unsupported; using vanilla.");
   }
-  if (DetourTransactionBegin() != NO_ERROR) return false;
+  if (native_hooks::Begin() != NO_ERROR) return false;
   if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
       || DetourAttach(&render_ssr, HookedRenderSsr) != NO_ERROR
       || DetourAttach(&ssr_depth::build_pyramid, ssr_depth::HookedBuildPyramid) != NO_ERROR
@@ -715,7 +716,7 @@ inline bool InstallStreamlineHook(reshade::api::device* device) {
     }
   }
 
-  if (DetourTransactionBegin() != NO_ERROR) return false;
+  if (native_hooks::Begin() != NO_ERROR) return false;
   if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
       || DetourAttach(&set_frame_generation_options, HookedSetFrameGenerationOptions)
              != NO_ERROR
@@ -969,7 +970,7 @@ inline bool InstallRenderPathHook() {
     }
   }
 
-  if (DetourTransactionBegin() != NO_ERROR) return false;
+  if (native_hooks::Begin() != NO_ERROR) return false;
   if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR
       || DetourAttach(&render_path, HookedRenderPath) != NO_ERROR) {
     DetourTransactionAbort();
@@ -1106,7 +1107,7 @@ inline void Shutdown() {
       && !render_path_hook_installed && !streamline_hook_installed) {
     return;
   }
-  if (DetourTransactionBegin() != NO_ERROR) return;
+  if (native_hooks::Begin() != NO_ERROR) return;
   if (DetourUpdateThread(GetCurrentThread()) != NO_ERROR) {
     DetourTransactionAbort();
     return;

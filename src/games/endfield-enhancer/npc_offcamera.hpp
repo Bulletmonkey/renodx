@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <limits>
 #include <unordered_set>
-#include <TlHelp32.h>
+#include "./native_hooks.hpp"
 #include <unordered_map>
 
 namespace endfield::npc_offcamera {
@@ -605,47 +605,20 @@ inline bool HookedCanUnload(void* self, void* method) {
   return original || CameraRejectsLod(self);
 }
 inline bool UpdateHooks(bool attach) {
-  std::vector<HANDLE> threads;
-  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-  THREADENTRY32 entry{sizeof(entry)};
-  bool ok = snapshot != INVALID_HANDLE_VALUE && Thread32First(snapshot, &entry);
-  if (ok) do {
-      if (entry.th32OwnerProcessID != GetCurrentProcessId() || entry.th32ThreadID == GetCurrentThreadId()) continue;
-      HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, entry.th32ThreadID);
-      if (!thread) {
-        if (GetLastError() != ERROR_INVALID_PARAMETER) {
-          ok = false;
-          break;
-        }
-      } else
-        threads.push_back(thread);
-    } while (Thread32Next(snapshot, &entry));
-  if (snapshot != INVALID_HANDLE_VALUE) CloseHandle(snapshot);
-  if (ok && DetourTransactionBegin() == NO_ERROR) {
-    for (HANDLE thread : threads)
-      if (DetourUpdateThread(thread) != NO_ERROR) {
-        ok = false;
-        break;
-      }
-    if (ok) ok = (attach ? DetourAttach(&blocked, HookedBlocked) : DetourDetach(&blocked, HookedBlocked)) == NO_ERROR;
-    if (ok) ok = (attach ? DetourAttach(&rebuild_cache, HookedCache) : DetourDetach(&rebuild_cache, HookedCache)) == NO_ERROR;
-    if (ok) ok = (attach ? DetourAttach(&can_load, HookedCanLoad) : DetourDetach(&can_load, HookedCanLoad)) == NO_ERROR;
-    if (ok) ok = (attach ? DetourAttach(&can_unload, HookedCanUnload) : DetourDetach(&can_unload, HookedCanUnload)) == NO_ERROR;
-    if (ok) ok = (attach ? DetourAttach(&lod_tick, HookedLodTick) : DetourDetach(&lod_tick, HookedLodTick)) == NO_ERROR;
-    if (ok) ok = (attach ? DetourAttach(&downgrade_lod_tick, HookedDowngradeLodTick) : DetourDetach(&downgrade_lod_tick, HookedDowngradeLodTick)) == NO_ERROR;
-    if (ok) ok = (attach ? DetourAttach(&lod_manager_tick, HookedLodManagerTick) : DetourDetach(&lod_manager_tick, HookedLodManagerTick)) == NO_ERROR;
-    if (ok) ok = (attach ? DetourAttach(&cpu_budget, HookedCpuBudget) : DetourDetach(&cpu_budget, HookedCpuBudget)) == NO_ERROR;
-    if (ok) ok = (attach ? DetourAttach(&process_queue, HookedProcessQueue) : DetourDetach(&process_queue, HookedProcessQueue)) == NO_ERROR;
-    if (ok) ok = (attach ? DetourAttach(&move_next, HookedMoveNext) : DetourDetach(&move_next, HookedMoveNext)) == NO_ERROR;
-    if (ok) ok = (attach ? DetourAttach(&avatar_fade, HookedAvatarFade) : DetourDetach(&avatar_fade, HookedAvatarFade)) == NO_ERROR;
-    if (ok)
-      ok = DetourTransactionCommit() == NO_ERROR;
-    else
-      DetourTransactionAbort();
-  } else
-    ok = false;
-  for (HANDLE thread : threads) CloseHandle(thread);
-  return ok;
+  return native_hooks::Update(attach ? "Off-camera entities install" : "Off-camera entities removal", [attach]() -> LONG {
+    LONG result = attach ? DetourAttach(&blocked, HookedBlocked) : DetourDetach(&blocked, HookedBlocked);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&rebuild_cache, HookedCache) : DetourDetach(&rebuild_cache, HookedCache);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&can_load, HookedCanLoad) : DetourDetach(&can_load, HookedCanLoad);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&can_unload, HookedCanUnload) : DetourDetach(&can_unload, HookedCanUnload);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&lod_tick, HookedLodTick) : DetourDetach(&lod_tick, HookedLodTick);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&downgrade_lod_tick, HookedDowngradeLodTick) : DetourDetach(&downgrade_lod_tick, HookedDowngradeLodTick);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&lod_manager_tick, HookedLodManagerTick) : DetourDetach(&lod_manager_tick, HookedLodManagerTick);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&cpu_budget, HookedCpuBudget) : DetourDetach(&cpu_budget, HookedCpuBudget);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&process_queue, HookedProcessQueue) : DetourDetach(&process_queue, HookedProcessQueue);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&move_next, HookedMoveNext) : DetourDetach(&move_next, HookedMoveNext);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&avatar_fade, HookedAvatarFade) : DetourDetach(&avatar_fade, HookedAvatarFade);
+    return result;
+  });
 }
 inline bool Resolve() {
   if (!npc_distance::detail::SupportedBuild()) return false;

@@ -1,6 +1,6 @@
 #pragma once
 
-#include <TlHelp32.h>
+#include "./native_hooks.hpp"
 #include "./npc_distance.hpp"
 #include "./ui_visibility_script.hpp"
 
@@ -126,39 +126,9 @@ inline void HookedTick(void* manager, float delta, MethodInfo* method) {
 }
 
 inline bool UpdateHook(bool attach) {
-  std::vector<HANDLE> threads;
-  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-  THREADENTRY32 item{sizeof(item)};
-  bool ok = snapshot != INVALID_HANDLE_VALUE && Thread32First(snapshot, &item);
-  if (ok) do {
-      if (item.th32OwnerProcessID != GetCurrentProcessId() || item.th32ThreadID == GetCurrentThreadId()) continue;
-      HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION,
-                                 FALSE, item.th32ThreadID);
-      if (!thread) {
-        if (GetLastError() == ERROR_INVALID_PARAMETER) continue;
-        ok = false;
-        break;
-      }
-      threads.push_back(thread);
-    } while (Thread32Next(snapshot, &item));
-  if (snapshot != INVALID_HANDLE_VALUE) CloseHandle(snapshot);
-  if (ok) {
-    ok = DetourTransactionBegin() == NO_ERROR;
-    if (ok) {
-      for (HANDLE thread : threads)
-        if (DetourUpdateThread(thread) != NO_ERROR) {
-          ok = false;
-          break;
-        }
-      if (ok) ok = (attach ? DetourAttach(&tick, HookedTick) : DetourDetach(&tick, HookedTick)) == NO_ERROR;
-      if (ok)
-        ok = DetourTransactionCommit() == NO_ERROR;
-      else
-        DetourTransactionAbort();
-    }
-  }
-  for (HANDLE thread : threads) CloseHandle(thread);
-  return ok;
+  return native_hooks::Update(attach ? "UI visibility install" : "UI visibility removal", [attach]() -> LONG {
+    return attach ? DetourAttach(&tick, HookedTick) : DetourDetach(&tick, HookedTick);
+  });
 }
 
 inline bool Resolve() {
@@ -239,10 +209,13 @@ inline void OnPresent() {
                   std::memory_order_release);
   if (installed || unavailable.load() || stopping.load() || requested.load() == 0) return;
   if (!ResolveApi() || !FindImage("Lua.Beyond.dll")) return;
-  if (!Resolve() || !UpdateHook(true)) {
+  const bool resolved = Resolve();
+  if (!resolved || !UpdateHook(true)) {
     unavailable.store(true);
     status.store(4);
-    Log(reshade::log::level::warning, "Endfield enhancer: UI visibility hook refused for this game build or conflicting patch.");
+    Log(reshade::log::level::warning, resolved
+                                          ? "Endfield enhancer: UI visibility hook installation failed; visibility unchanged."
+                                          : "Endfield enhancer: UI visibility hook refused for this game build or conflicting patch.");
     return;
   }
   std::memcpy(patched.data(), entry, patched.size());

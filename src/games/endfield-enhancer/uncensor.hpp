@@ -1,7 +1,7 @@
 #pragma once
 
 #include <Windows.h>
-#include <TlHelp32.h>
+#include "./native_hooks.hpp"
 
 #include "./enhancer.hpp"
 
@@ -69,46 +69,9 @@ inline void HookedProcessPitch(void* camera, enhancer::detail::MethodInfo* metho
 }
 
 inline bool UpdateHook(bool attach) {
-  if (DetourTransactionBegin() != NO_ERROR) return false;
-  std::vector<HANDLE> threads;
-  bool ready = true;
-  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-  THREADENTRY32 entry{sizeof(THREADENTRY32)};
-  if (snapshot == INVALID_HANDLE_VALUE || !Thread32First(snapshot, &entry)) {
-    ready = false;
-  } else {
-    do {
-      if (entry.th32OwnerProcessID != GetCurrentProcessId()
-          || entry.th32ThreadID == GetCurrentThreadId()) continue;
-      HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT
-                                     | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION,
-                                 FALSE, entry.th32ThreadID);
-      if (thread == nullptr) {
-        if (GetLastError() == ERROR_INVALID_PARAMETER) continue;
-        ready = false;
-        break;
-      }
-      threads.push_back(thread);
-    } while (Thread32Next(snapshot, &entry));
-  }
-  if (snapshot != INVALID_HANDLE_VALUE) CloseHandle(snapshot);
-
-  if (ready) {
-    for (HANDLE thread : threads) {
-      if (DetourUpdateThread(thread) != NO_ERROR) {
-        ready = false;
-        break;
-      }
-    }
-  }
-  if (!ready || (attach ? DetourAttach(&process_pitch, HookedProcessPitch) : DetourDetach(&process_pitch, HookedProcessPitch)) != NO_ERROR) {
-    DetourTransactionAbort();
-    ready = false;
-  } else {
-    ready = DetourTransactionCommit() == NO_ERROR;
-  }
-  for (HANDLE thread : threads) CloseHandle(thread);
-  return ready;
+  return native_hooks::Update(attach ? "Uncensor install" : "Uncensor removal", [attach]() -> LONG {
+    return attach ? DetourAttach(&process_pitch, HookedProcessPitch) : DetourDetach(&process_pitch, HookedProcessPitch);
+  });
 }
 
 inline void OnPresent() {

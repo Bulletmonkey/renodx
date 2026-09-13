@@ -1,6 +1,6 @@
 #pragma once
 #include <Windows.h>
-#include <TlHelp32.h>
+#include "./native_hooks.hpp"
 #include <intrin.h>
 #include <stdexcept>
 #include "./npc_distance.hpp"
@@ -257,40 +257,14 @@ inline int HookedSave(void* target, void* path, int crop, int max_mb, void* meth
   }
 }
 inline bool UpdateHooks(bool attach) {
-  std::vector<HANDLE> threads;
-  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-  THREADENTRY32 entry{sizeof(entry)};
-  bool ok = snapshot != INVALID_HANDLE_VALUE && Thread32First(snapshot, &entry);
-  if (ok) do {
-      if (entry.th32OwnerProcessID != GetCurrentProcessId() || entry.th32ThreadID == GetCurrentThreadId()) continue;
-      HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, entry.th32ThreadID);
-      if (thread)
-        threads.push_back(thread);
-      else if (GetLastError() != ERROR_INVALID_PARAMETER) {
-        ok = false;
-        break;
-      }
-    } while (Thread32Next(snapshot, &entry));
-  if (snapshot != INVALID_HANDLE_VALUE) CloseHandle(snapshot);
-  if (ok && DetourTransactionBegin() == NO_ERROR) {
-    for (HANDLE thread : threads)
-      if (DetourUpdateThread(thread) != NO_ERROR) {
-        ok = false;
-        break;
-      }
-    if (ok) ok = (attach ? DetourAttach(&allocs[0], HookedAlloc<0>) : DetourDetach(&allocs[0], HookedAlloc<0>)) == NO_ERROR;
-    if (ok) ok = (attach ? DetourAttach(&allocs[1], HookedAlloc<1>) : DetourDetach(&allocs[1], HookedAlloc<1>)) == NO_ERROR;
-    if (ok) ok = (attach ? DetourAttach(&save, HookedSave) : DetourDetach(&save, HookedSave)) == NO_ERROR;
-    if (ok) ok = (attach ? DetourAttach(&watermark_with_source, HookedWatermarkWithSource) : DetourDetach(&watermark_with_source, HookedWatermarkWithSource)) == NO_ERROR;
-    if (ok) ok = (attach ? DetourAttach(&watermark, HookedWatermark) : DetourDetach(&watermark, HookedWatermark)) == NO_ERROR;
-    if (ok)
-      ok = DetourTransactionCommit() == NO_ERROR;
-    else
-      DetourTransactionAbort();
-  } else
-    ok = false;
-  for (HANDLE thread : threads) CloseHandle(thread);
-  return ok;
+  return native_hooks::Update(attach ? "Screenshots install" : "Screenshots removal", [attach]() -> LONG {
+    LONG result = attach ? DetourAttach(&allocs[0], HookedAlloc<0>) : DetourDetach(&allocs[0], HookedAlloc<0>);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&allocs[1], HookedAlloc<1>) : DetourDetach(&allocs[1], HookedAlloc<1>);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&save, HookedSave) : DetourDetach(&save, HookedSave);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&watermark_with_source, HookedWatermarkWithSource) : DetourDetach(&watermark_with_source, HookedWatermarkWithSource);
+    if (result == NO_ERROR) result = attach ? DetourAttach(&watermark, HookedWatermark) : DetourDetach(&watermark, HookedWatermark);
+    return result;
+  });
 }
 inline bool Resolve() {
   if (!npc_distance::detail::SupportedBuild()) return false;
