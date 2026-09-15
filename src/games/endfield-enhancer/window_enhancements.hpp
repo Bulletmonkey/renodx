@@ -85,6 +85,16 @@ native_resize_state g_native_resize;
 
 enhancement_lifecycle g_enhancements;
 
+// The overlay thread normally lives as long as the game window. If it keeps exiting right after
+// creation (its message loop or window cannot be set up, e.g. under Wine), reinstalling on every
+// present would re-hook the window, re-style it and re-enumerate audio each frame and leak; give
+// up after a few consecutive exits instead.
+constexpr int k_max_overlay_thread_exits = 3;
+int g_overlay_thread_exits = 0;
+bool g_enhancements_disabled = false;
+void (*disabled_log)(int exits) = nullptr;
+void (*thread_exit_log)(const char* reason, unsigned long error) = nullptr;
+
 [[nodiscard]] int scale_for_dpi(int value, UINT dpi) noexcept {
   return MulDiv(value, static_cast<int>(dpi), 96);
 }
@@ -1577,6 +1587,12 @@ DWORD run_audio_overlay(void* parameter) noexcept {
   bool class_registered = RegisterClassExW(&window_class) != 0;
   if (!class_registered && GetLastError() == ERROR_CLASS_ALREADY_EXISTS)
     class_registered = true;
+  const char* exit_reason = "loop ended";
+  unsigned long exit_error = 0;
+  if (!class_registered) {
+    exit_reason = "RegisterClassExW failed";
+    exit_error = GetLastError();
+  }
 
   audio_overlay_state state;
   state.game_window = context->game_window;
@@ -1601,6 +1617,10 @@ DWORD run_audio_overlay(void* parameter) noexcept {
   }
 
   context->overlay_window.store(state.window, std::memory_order_release);
+  if (class_registered && state.window == nullptr) {
+    exit_reason = "CreateWindowExW failed";
+    exit_error = GetLastError();
+  }
 
   if (state.window != nullptr && com_available)
     static_cast<void>(refresh_audio_sessions(state));
@@ -1617,21 +1637,27 @@ DWORD run_audio_overlay(void* parameter) noexcept {
         FALSE,
         k_overlay_fallback_interval_ms,
         QS_ALLINPUT);
-    if (wait_result == WAIT_OBJECT_0 || wait_result == WAIT_FAILED)
+    if (wait_result == WAIT_OBJECT_0 || wait_result == WAIT_FAILED) {
+      exit_reason = wait_result == WAIT_FAILED ? "MsgWaitForMultipleObjects failed" : "stop requested";
+      exit_error = wait_result == WAIT_FAILED ? GetLastError() : 0;
       break;
+    }
 
     MSG message = {};
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
       if (message.message == WM_QUIT) {
         running = false;
+        exit_reason = "WM_QUIT";
         break;
       }
       TranslateMessage(&message);
       DispatchMessageW(&message);
     }
 
-    if (!running || !IsWindow(context->game_window))
+    if (!running || !IsWindow(context->game_window)) {
+      if (running) exit_reason = "game window gone";
       break;
+    }
 
     if (state.window != nullptr) update_audio_overlay_position(state);
     if (state.window != nullptr && com_available)
@@ -1639,6 +1665,8 @@ DWORD run_audio_overlay(void* parameter) noexcept {
   }
 
   context->overlay_window.store(nullptr, std::memory_order_release);
+  if (thread_exit_log != nullptr)
+    thread_exit_log(exit_reason, exit_error);
   if (state.window != nullptr)
     DestroyWindow(state.window);
   if (class_registered)
@@ -1662,8 +1690,23 @@ void install_window_enhancements(HWND game_window, HMODULE module) noexcept {
   if (game_window == nullptr || module == nullptr)
     return;
 
-  if (IsWindow(g_enhancements.game_window) && g_enhancements.thread != nullptr && WaitForSingleObject(g_enhancements.thread, 0) == WAIT_TIMEOUT) {
+  if (g_enhancements_disabled)
     return;
+
+  const bool previous_window_alive = IsWindow(g_enhancements.game_window) != FALSE;
+  if (previous_window_alive && g_enhancements.thread != nullptr && WaitForSingleObject(g_enhancements.thread, 0) == WAIT_TIMEOUT) {
+    return;
+  }
+
+  if (previous_window_alive && g_enhancements.thread != nullptr) {
+    // Thread exited although the game window still exists: count it as a failure.
+    if (++g_overlay_thread_exits >= k_max_overlay_thread_exits) {
+      uninstall_window_enhancements();
+      g_enhancements_disabled = true;
+      if (disabled_log != nullptr)
+        disabled_log(g_overlay_thread_exits);
+      return;
+    }
   }
 
   uninstall_window_enhancements();
