@@ -94,6 +94,7 @@ int g_overlay_thread_exits = 0;
 bool g_enhancements_disabled = false;
 void (*disabled_log)(int exits) = nullptr;
 void (*thread_exit_log)(const char* reason, unsigned long error) = nullptr;
+void (*loop_stats_log)(const char* text) = nullptr;
 
 [[nodiscard]] int scale_for_dpi(int value, UINT dpi) noexcept {
   return MulDiv(value, static_cast<int>(dpi), 96);
@@ -1626,6 +1627,8 @@ DWORD run_audio_overlay(void* parameter) noexcept {
     static_cast<void>(refresh_audio_sessions(state));
 
   bool running = state.window != nullptr;
+  unsigned long long stats_iterations = 0, stats_present = 0, stats_input = 0, stats_timeout = 0, stats_messages = 0;
+  ULONGLONG stats_started = GetTickCount64();
   while (running) {
     const HANDLE wait_handles[] = {
         context->stop_event,
@@ -1637,6 +1640,18 @@ DWORD run_audio_overlay(void* parameter) noexcept {
         FALSE,
         k_overlay_fallback_interval_ms,
         QS_ALLINPUT);
+    ++stats_iterations;
+    if (wait_result == WAIT_OBJECT_0 + 1) ++stats_present;
+    else if (wait_result == WAIT_OBJECT_0 + 2) ++stats_input;
+    else if (wait_result == WAIT_TIMEOUT) ++stats_timeout;
+    if (loop_stats_log != nullptr && GetTickCount64() - stats_started >= 5000) {
+      char text[240];
+      wsprintfA(text, "Endfield enhancer: overlay loop 5s stats: iterations=%I64u present=%I64u input=%I64u timeout=%I64u messages=%I64u visible=%d",
+                stats_iterations, stats_present, stats_input, stats_timeout, stats_messages, state.visible ? 1 : 0);
+      loop_stats_log(text);
+      stats_iterations = stats_present = stats_input = stats_timeout = stats_messages = 0;
+      stats_started = GetTickCount64();
+    }
     if (wait_result == WAIT_OBJECT_0 || wait_result == WAIT_FAILED) {
       exit_reason = wait_result == WAIT_FAILED ? "MsgWaitForMultipleObjects failed" : "stop requested";
       exit_error = wait_result == WAIT_FAILED ? GetLastError() : 0;
@@ -1650,6 +1665,7 @@ DWORD run_audio_overlay(void* parameter) noexcept {
         exit_reason = "WM_QUIT";
         break;
       }
+      ++stats_messages;
       TranslateMessage(&message);
       DispatchMessageW(&message);
     }
@@ -1660,8 +1676,9 @@ DWORD run_audio_overlay(void* parameter) noexcept {
     }
 
     if (state.window != nullptr) update_audio_overlay_position(state);
-    if (state.window != nullptr && com_available)
-      poll_audio_state(state);
+    // BISECT-I: poll_audio_state disabled; position update kept
+    // if (state.window != nullptr && com_available)
+    //   poll_audio_state(state);
   }
 
   context->overlay_window.store(nullptr, std::memory_order_release);
