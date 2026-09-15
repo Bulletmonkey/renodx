@@ -1659,9 +1659,10 @@ DWORD run_audio_overlay(void* parameter) noexcept {
       break;
     }
 
-    if (state.window != nullptr) update_audio_overlay_position(state);
-    if (state.window != nullptr && com_available)
-      poll_audio_state(state);
+    // BISECT-E: per-present overlay work disabled (leak hunt)
+    // if (state.window != nullptr) update_audio_overlay_position(state);
+    // if (state.window != nullptr && com_available)
+    //   poll_audio_state(state);
   }
 
   context->overlay_window.store(nullptr, std::memory_order_release);
