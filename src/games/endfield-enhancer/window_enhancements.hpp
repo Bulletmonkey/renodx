@@ -1571,7 +1571,8 @@ DWORD run_audio_overlay(void* parameter) noexcept {
   if (context == nullptr)
     return 0;
 
-  static_cast<void>(enable_native_resize(context->game_window));
+  // BISECT-F: game-thread window subclass / cursor guard / style change disabled (leak hunt)
+  // static_cast<void>(enable_native_resize(context->game_window));
 
   const HRESULT com_result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   const bool uninitialize_com = SUCCEEDED(com_result);
