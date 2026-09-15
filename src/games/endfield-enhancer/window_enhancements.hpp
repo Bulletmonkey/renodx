@@ -444,7 +444,8 @@ bool install_resize_on_window_thread(HWND window) noexcept {
     return false;
   }
   g_native_resize.installed = true;
-  const bool cursor_interception_installed = cursor_guard::Install(window);
+  // BISECT-G: Unity cursor IAT hooks disabled (leak hunt)
+  const bool cursor_interception_installed = false; // cursor_guard::Install(window);
   if (cursor_guard::status_log) cursor_guard::status_log(cursor_interception_installed);
   if (!cursor_interception_installed)
     OutputDebugStringW(L"Endfield Enhancer: Unity cursor interception refused (build/import check or transaction failure).\n");
