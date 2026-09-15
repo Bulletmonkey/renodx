@@ -6,6 +6,7 @@
 #include <cwchar>
 
 #include <Windows.h>
+#include <cstdio>
 
 #include "../../utils/settings.hpp"
 #include "../../utils/swapchain.hpp"
@@ -1348,6 +1349,18 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
   switch (reason) {
     case DLL_PROCESS_ATTACH:
       endfield::runtime_status::addon_module = h_module;
+      endfield::window_enhancements::thread_exit_log = [](const char* reason, unsigned long error) {
+        char text[192];
+        std::snprintf(text, sizeof(text), "Endfield enhancer: title-bar controls thread exited (%s, error %lu).", reason, error);
+        reshade::log::message(reshade::log::level::info, text);
+      };
+      endfield::window_enhancements::disabled_log = [](int exits) {
+        char text[192];
+        std::snprintf(text, sizeof(text),
+                      "Endfield enhancer: title-bar controls thread exited %d times right after start; window enhancements disabled for this session (unsupported environment, e.g. Wine).",
+                      exits);
+        reshade::log::message(reshade::log::level::warning, text);
+      };
       endfield::cursor_guard::status_log = [](bool installed) {
         if (!installed) reshade::log::message(reshade::log::level::warning,
                                               "Endfield cursor guard: refused unsupported build, changed imports, or failed transaction; native cursor behavior retained.");
