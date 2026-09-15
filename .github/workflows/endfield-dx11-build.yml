@@ -4,6 +4,11 @@ name: endfield-dx11-build
 # dispatched on, and uploads it as a workflow artifact instead of publishing a release.
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: "CMake target to build (game folder name under src/games)"
+        required: false
+        default: "endfield"
 
 permissions:
   contents: read
@@ -38,20 +43,20 @@ jobs:
         run: cmake --preset clang-x64
 
       - name: Build endfield addon (x64)
-        run: cmake --build --preset clang-x64-release --target endfield --verbose
+        run: cmake --build --preset clang-x64-release --target ${{ inputs.target || 'endfield' }} --verbose
 
       - name: Show build output
         shell: pwsh
         run: |
           git rev-parse HEAD
-          Get-ChildItem build\release\renodx-endfield.*
-          Get-FileHash -Algorithm MD5 build\release\renodx-endfield.addon64
+          Get-ChildItem build\release\renodx-${{ inputs.target || 'endfield' }}.*
+          Get-FileHash -Algorithm MD5 build\release\renodx-${{ inputs.target || 'endfield' }}.addon64
 
       - name: Upload addon
         uses: actions/upload-artifact@v4
         with:
-          name: renodx-endfield-dx11-${{ github.sha }}
+          name: renodx-${{ inputs.target || 'endfield' }}-${{ github.sha }}
           path: |
-            build/release/renodx-endfield.addon64
-            build/release/renodx-endfield.pdb
+            build/release/renodx-${{ inputs.target || 'endfield' }}.addon64
+            build/release/renodx-${{ inputs.target || 'endfield' }}.pdb
           if-no-files-found: error
