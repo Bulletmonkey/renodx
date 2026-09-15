@@ -1349,6 +1349,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD reason, LPVOID) {
   switch (reason) {
     case DLL_PROCESS_ATTACH:
       endfield::runtime_status::addon_module = h_module;
+      endfield::window_enhancements::loop_stats_log = [](const char* text) {
+        reshade::log::message(reshade::log::level::info, text);
+      };
       endfield::window_enhancements::thread_exit_log = [](const char* reason, unsigned long error) {
         char text[192];
         std::snprintf(text, sizeof(text), "Endfield enhancer: title-bar controls thread exited (%s, error %lu).", reason, error);
