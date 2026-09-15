@@ -1292,32 +1292,33 @@ void OnPresent(
   HWND window = swapchain == nullptr
                     ? nullptr
                     : static_cast<HWND>(swapchain->get_hwnd());
-  endfield::window_enhancements::install_window_enhancements(
-      window, endfield::runtime_status::addon_module);
-  endfield::window_enhancements::notify_window_presented();
-  UpdateFpsLimitFormat(fps_limit_setting);
-  UpdateFpsLimitFormat(frame_generation_fps_limit_setting);
-  UpdateFpsLimitFormat(background_fps_limit_setting);
-  dof_near_setting->format = dof_near_setting->GetValue() == 0.f ? "Off" : "%.1f";
-  dof_far_setting->format = dof_far_setting->GetValue() == 0.f ? "Off" : "%.1f";
-
-  endfield::enhancer::OnPresent(swapchain == nullptr ? nullptr : swapchain->get_device());
-  endfield::uncensor::OnPresent();
-  endfield::camera::OnPresent();
-  endfield::ui_visibility::OnPresent();
-  endfield::ssr_resolve::OnPresent(
-      endfield::enhancer::ssr_resolution == 1.f,
-      endfield::enhancer::ssr_resolution == 1.f
-          && endfield::ssr_resolve::improved_override_setting == 1.f
-          && swapchain != nullptr
-          && HasSsrBaseAddon(swapchain->get_device()->get_api()));
-  endfield::hdr_output::OnPresent(swapchain);
-  endfield::lod::OnPresent();
-  endfield::npc_distance::OnPresent();
-  endfield::npc_offcamera::OnPresent();
-  endfield::npc_loading::OnPresent();
-  endfield::world_distance::OnPresent();
-  endfield::screenshots::OnPresent();
+  // BISECT-D: every per-frame subsystem call removed from OnPresent (leak hunt)
+  //   endfield::window_enhancements::install_window_enhancements(
+  //       window, endfield::runtime_status::addon_module);
+  //   endfield::window_enhancements::notify_window_presented();
+  //   UpdateFpsLimitFormat(fps_limit_setting);
+  //   UpdateFpsLimitFormat(frame_generation_fps_limit_setting);
+  //   UpdateFpsLimitFormat(background_fps_limit_setting);
+  //   dof_near_setting->format = dof_near_setting->GetValue() == 0.f ? "Off" : "%.1f";
+  //   dof_far_setting->format = dof_far_setting->GetValue() == 0.f ? "Off" : "%.1f";
+  // 
+  //   endfield::enhancer::OnPresent(swapchain == nullptr ? nullptr : swapchain->get_device());
+  //   endfield::uncensor::OnPresent();
+  //   endfield::camera::OnPresent();
+  //   endfield::ui_visibility::OnPresent();
+  //   endfield::ssr_resolve::OnPresent(
+  //       endfield::enhancer::ssr_resolution == 1.f,
+  //       endfield::enhancer::ssr_resolution == 1.f
+  //           && endfield::ssr_resolve::improved_override_setting == 1.f
+  //           && swapchain != nullptr
+  //           && HasSsrBaseAddon(swapchain->get_device()->get_api()));
+  //   endfield::hdr_output::OnPresent(swapchain);
+  //   endfield::lod::OnPresent();
+  //   endfield::npc_distance::OnPresent();
+  //   endfield::npc_offcamera::OnPresent();
+  //   endfield::npc_loading::OnPresent();
+  //   endfield::world_distance::OnPresent();
+  //   endfield::screenshots::OnPresent();
 
   uint32_t delay = limiter_resume_delay.load(std::memory_order_relaxed);
   if (delay != 0) {
