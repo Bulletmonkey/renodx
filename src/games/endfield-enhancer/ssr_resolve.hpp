@@ -193,9 +193,10 @@ inline void OnPresent(bool full_resolution, bool improved_override = false) {
 
 inline void Use(DWORD reason) {
   if (reason == DLL_PROCESS_ATTACH) {
-    renodx::utils::shader::use_shader_cache = true;
+    // BISECT-A: shader cache disabled (suspected unbounded bytecode retention in shared tracker)
+    // renodx::utils::shader::use_shader_cache = true;
     renodx::utils::shader::Use(reason);
-    renodx::utils::shader::shared.data->use_shader_cache = true;
+    // renodx::utils::shader::shared.data->use_shader_cache = true;
     renodx::utils::command_action::Use(reason);
     reshade::register_event<reshade::addon_event::destroy_pipeline_layout>(OnDestroyLayout);
     reshade::register_event<reshade::addon_event::destroy_device>(OnDestroyDevice);
