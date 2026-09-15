@@ -84,11 +84,12 @@ void OnDestroySwapchain(reshade::api::swapchain*, bool) {
 void OnInitDevice(reshade::api::device* device) {
   endfield::screenshots::observer::OnInitDevice(device);
 
-  if (device != nullptr
-      && (device->get_api() == reshade::api::device_api::vulkan
-          || device->get_api() == reshade::api::device_api::d3d11)) {
-    endfield::enhancer::TryInstallSsrResolutionHook();
-  }
+  // BISECT-C: SSR resolution / depth hooks on UnityPlayer disabled (leak hunt)
+  // if (device != nullptr
+  //     && (device->get_api() == reshade::api::device_api::vulkan
+  //         || device->get_api() == reshade::api::device_api::d3d11)) {
+  //   endfield::enhancer::TryInstallSsrResolutionHook();
+  // }
   endfield::enhancer::TryInstallStreamlineHook(device);
 }
 
