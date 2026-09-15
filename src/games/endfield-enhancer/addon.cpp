@@ -1292,9 +1292,10 @@ void OnPresent(
   HWND window = swapchain == nullptr
                     ? nullptr
                     : static_cast<HWND>(swapchain->get_hwnd());
-  endfield::window_enhancements::install_window_enhancements(
-      window, endfield::runtime_status::addon_module);
-  endfield::window_enhancements::notify_window_presented();
+  // BISECT-B: per-frame window enhancements disabled (suspected per-frame reinstall under Wine)
+  // endfield::window_enhancements::install_window_enhancements(
+  //     window, endfield::runtime_status::addon_module);
+  // endfield::window_enhancements::notify_window_presented();
   UpdateFpsLimitFormat(fps_limit_setting);
   UpdateFpsLimitFormat(frame_generation_fps_limit_setting);
   UpdateFpsLimitFormat(background_fps_limit_setting);
