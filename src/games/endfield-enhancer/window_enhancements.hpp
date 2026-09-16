@@ -95,6 +95,13 @@ bool g_enhancements_disabled = false;
 void (*disabled_log)(int exits) = nullptr;
 void (*thread_exit_log)(const char* reason, unsigned long error) = nullptr;
 
+// Wine's mmdevapi leaks memory on every audio-session enumeration (measured ~500 MB/s at 4K
+// with the 3 s refresh), so the volume readout is skipped there and the overlay shows without it.
+[[nodiscard]] bool running_under_wine() noexcept {
+  static const bool result = GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "wine_get_version") != nullptr;
+  return result;
+}
+
 [[nodiscard]] int scale_for_dpi(int value, UINT dpi) noexcept {
   return MulDiv(value, static_cast<int>(dpi), 96);
 }
@@ -1184,6 +1191,10 @@ void paint_audio_overlay(audio_overlay_state& state) noexcept {
 
 [[nodiscard]] bool refresh_audio_sessions(audio_overlay_state& state) noexcept {
   state.last_audio_refresh = GetTickCount64();
+  if (running_under_wine()) {
+    state.audio_available = false;
+    return false;
+  }
   if (!state.audio.refresh(GetCurrentProcessId())) {
     state.audio_available = false;
     InvalidateRect(state.window, nullptr, FALSE);
@@ -1660,7 +1671,9 @@ DWORD run_audio_overlay(void* parameter) noexcept {
     }
 
     if (state.window != nullptr) update_audio_overlay_position(state);
-    if (state.window != nullptr && com_available)
+    // Only poll the audio session while the volume control is actually showing; there is no
+    // reason to enumerate audio sessions through COM every few seconds for a hidden window.
+    if (state.window != nullptr && com_available && state.visible)
       poll_audio_state(state);
   }
 
