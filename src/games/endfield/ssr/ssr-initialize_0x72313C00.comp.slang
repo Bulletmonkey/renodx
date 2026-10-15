@@ -46,8 +46,9 @@ cbuffer _11_12 : register(b1)
 [[vk::binding(5, 0)]] SamplerState _8 : register(s5);
 [[vk::binding(3, 0)]] Texture2D<float4> _13 : register(t3);
 [[vk::binding(4, 0)]] Texture2D<float4> _14 : register(t4);
-[[vk::binding(0, 0)]] RWTexture2D<unorm float2> _17 : register(u0);
-[[vk::binding(1, 0)]] RWTexture2D<unorm float2> _18 : register(u1);
+// RenoDX: match the native 16-bit normalized SSR storage images explicitly.
+[[vk::binding(0, 0)]] [[vk::image_format("rg16")]] RWTexture2D<unorm float2> _17 : register(u0);
+[[vk::binding(1, 0)]] [[vk::image_format("rg16")]] RWTexture2D<unorm float2> _18 : register(u1);
 [[vk::binding(2, 0)]] RWTexture2D<unorm float> _20 : register(u2);
 
 static uint3 gl_WorkGroupID;

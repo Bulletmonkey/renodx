@@ -1,0 +1,178 @@
+#include "../shared.h"
+
+[[vk::binding(0, 1)]] cbuffer _3_4 : register(b0, space1) {
+  float4 _4_m0 : packoffset(c0);
+  float4 _4_m1 : packoffset(c1);
+  float4 _4_m2 : packoffset(c2);
+  float4 _4_m3 : packoffset(c3);
+  float4 _4_m4 : packoffset(c4);
+  float4 _4_m5 : packoffset(c5);
+  float4 _4_m6[6] : packoffset(c6);
+  float4 _4_m7[6] : packoffset(c12);
+  float4 _4_m8 : packoffset(c18);
+  float4 _4_m9 : packoffset(c19);
+  float4 _4_m10 : packoffset(c20);
+  float4 _4_m11 : packoffset(c21);
+  float4 _4_m12 : packoffset(c22);
+  float4 _4_m13 : packoffset(c23);
+  float4 _4_m14 : packoffset(c24);
+  float4 _4_m15 : packoffset(c25);
+  float _4_m16 : packoffset(c26);
+  float _4_m17 : packoffset(c26.y);
+  float _4_m18 : packoffset(c26.z);
+  uint _4_m19 : packoffset(c26.w);
+  float4 _4_m20 : packoffset(c27);
+  int4 _4_m21 : packoffset(c28);
+  float4 _4_m22 : packoffset(c29);
+  float4 _4_m23 : packoffset(c30);
+  float4 _4_m24 : packoffset(c31);
+  float4 _4_m25 : packoffset(c32);
+  float4 _4_m26 : packoffset(c33);
+  float4 _4_m27 : packoffset(c34);
+  float4 _4_m28 : packoffset(c35);
+  float4 _4_m29 : packoffset(c36);
+  float4 _4_m30 : packoffset(c37);
+  float4 _4_m31 : packoffset(c38);
+  float4 _4_m32[4] : packoffset(c39);
+  float4 _4_m33[4] : packoffset(c43);
+  float4 _4_m34[4] : packoffset(c47);
+  float4 _4_m35[4] : packoffset(c51);
+  float4 _4_m36 : packoffset(c55);
+  float4 _4_m37 : packoffset(c56);
+  float4 _4_m38[4] : packoffset(c57);
+  float4 _4_m39[4] : packoffset(c61);
+  float4 _4_m40[4] : packoffset(c65);
+  float4 _4_m41 : packoffset(c69);
+  float4 _4_m42 : packoffset(c70);
+  float4 _4_m43 : packoffset(c71);
+  float4 _4_m44 : packoffset(c72);
+  float4 _4_m45 : packoffset(c73);
+  float4 _4_m46 : packoffset(c74);
+  float4 _4_m47 : packoffset(c75);
+  float4 _4_m48 : packoffset(c76);
+  float4 _4_m49 : packoffset(c77);
+  float4 _4_m50 : packoffset(c78);
+  float4 _4_m51 : packoffset(c79);
+  float4 _4_m52 : packoffset(c80);
+  float4 _4_m53 : packoffset(c81);
+  float4 _4_m54 : packoffset(c82);
+  float4 _4_m55 : packoffset(c83);
+  float4 _4_m56 : packoffset(c84);
+  float4 _4_m57 : packoffset(c85);
+  float4 _4_m58 : packoffset(c86);
+  float4 _4_m59 : packoffset(c87);
+  float4 _4_m60 : packoffset(c88);
+  float4 _4_m61 : packoffset(c89);
+  float4 _4_m62 : packoffset(c90);
+  float4 _4_m63 : packoffset(c91);
+  float4 _4_m64 : packoffset(c92);
+  float4 _4_m65 : packoffset(c93);
+  float4 _4_m66 : packoffset(c94);
+  float4 _4_m67 : packoffset(c95);
+  float4 _4_m68 : packoffset(c96);
+  float4 _4_m69 : packoffset(c97);
+  float4 _4_m70 : packoffset(c98);
+  float4 _4_m71 : packoffset(c99);
+  float4 _4_m72 : packoffset(c100);
+  float4 _4_m73 : packoffset(c101);
+  float4 _4_m74 : packoffset(c102);
+  float4 _4_m75 : packoffset(c103);
+  float4 _4_m76 : packoffset(c104);
+  float4 _4_m77 : packoffset(c105);
+  float4 _4_m78 : packoffset(c106);
+  float4 _4_m79 : packoffset(c107);
+  float4 _4_m80 : packoffset(c108);
+  float4 _4_m81 : packoffset(c109);
+  float4 _4_m82 : packoffset(c110);
+  float4 _4_m83 : packoffset(c111);
+  float4 _4_m84 : packoffset(c112);
+  float4 _4_m85 : packoffset(c113);
+  float4 _4_m86 : packoffset(c114);
+  float4 _4_m87 : packoffset(c115);
+  float4 _4_m88 : packoffset(c116);
+  float4 _4_m89 : packoffset(c117);
+  float4 _4_m90 : packoffset(c118);
+  float4 _4_m91 : packoffset(c119);
+  float4 _4_m92 : packoffset(c120);
+  float4 _4_m93 : packoffset(c121);
+  float4 _4_m94 : packoffset(c122);
+  float4 _4_m95 : packoffset(c123);
+  float4 _4_m96 : packoffset(c124);
+  float4 _4_m97 : packoffset(c125);
+  float4 _4_m98 : packoffset(c126);
+  float4 _4_m99 : packoffset(c127);
+  float4 _4_m100 : packoffset(c128);
+  float4 _4_m101 : packoffset(c129);
+  float4 _4_m102[2] : packoffset(c130);
+  float4 _4_m103[2] : packoffset(c132);
+  float _4_m104 : packoffset(c134);
+  float _4_m105 : packoffset(c134.y);
+  float _4_m106 : packoffset(c134.z);
+  float _4_m107 : packoffset(c134.w);
+  float4 _4_m108 : packoffset(c135);
+  float4 _4_m109 : packoffset(c136);
+  float4 _4_m110 : packoffset(c137);
+  float4 _4_m111 : packoffset(c138);
+  float4 _4_m112 : packoffset(c139);
+  float4 _4_m113 : packoffset(c140);
+  float4 _4_m114 : packoffset(c141);
+  float4 _4_m115 : packoffset(c142);
+  float4 _4_m116 : packoffset(c143);
+  float4 _4_m117 : packoffset(c144);
+  float4 _4_m118 : packoffset(c145);
+  float4 _4_m119 : packoffset(c146);
+  float4 _4_m120 : packoffset(c147);
+  float4 _4_m121 : packoffset(c148);
+  float4 _4_m122 : packoffset(c149);
+  float4 _4_m123 : packoffset(c150);
+  float4 _4_m124 : packoffset(c151);
+  float4 _4_m125 : packoffset(c152);
+  float4 _4_m126 : packoffset(c153);
+  float4 _4_m127 : packoffset(c154);
+  float4 _4_m128 : packoffset(c155);
+  float4 _4_m129 : packoffset(c156);
+  float4 _4_m130 : packoffset(c157);
+  float4 _4_m131 : packoffset(c158);
+  float4 _4_m132 : packoffset(c159);
+  float4 _4_m133 : packoffset(c160);
+  float4 _4_m134 : packoffset(c161);
+  float4 _4_m135 : packoffset(c162);
+  float4 _4_m136 : packoffset(c163);
+  float4 _4_m137 : packoffset(c164);
+  column_major float4x4 _4_m138 : packoffset(c165);
+  float4 _4_m139 : packoffset(c169);
+  float4 _4_m140 : packoffset(c170);
+  float4 _4_m141 : packoffset(c171);
+  float4 _4_m142 : packoffset(c172);
+  int4 _4_m143 : packoffset(c173);
+  int4 _4_m144 : packoffset(c174);
+  int4 _4_m145 : packoffset(c175);
+  float4 _4_m146[32] : packoffset(c176);
+};
+
+[[vk::binding(2, 0)]] SamplerState _6 : register(s2, space0);
+[[vk::binding(1, 0)]] Texture2D<float4> _9 : register(t1, space0);
+[[vk::binding(0, 0)]] [[vk::image_format("r8")]] RWTexture2D<unorm float> _10 : register(u0, space0);
+
+static uint3 gl_GlobalInvocationID;
+struct SPIRV_Cross_Input {
+  uint3 gl_GlobalInvocationID : SV_DispatchThreadID;
+};
+
+void comp_main() {
+  // RenoDX code start: disable AO without changing the native spatial filter.
+  if (shader_injection.disable_game_ao >= 0.5f) {
+    _10[gl_GlobalInvocationID.xy] = 1.f;
+    return;
+  }
+  // RenoDX code end
+  float2 _50 = (float2(gl_GlobalInvocationID.xy) + 0.5f.xx) * _4_m0.zw;
+  float _59 = -_4_m0.z;
+  float _61 = -_4_m0.w;
+  _10[gl_GlobalInvocationID.xy] = ((((_9.SampleLevel(_6, _50, 0.0f).x + _9.SampleLevel(_6, _50 + float2(_59, _61), 0.0f).x) + _9.SampleLevel(_6, _50 + float2(_4_m0.z, _61), 0.0f).x) + _9.SampleLevel(_6, _50 + float2(_59, _4_m0.w), 0.0f).x) + _9.SampleLevel(_6, _50 + float2(_4_m0.zw), 0.0f).x) * 0.20000000298023223876953125f;
+}
+
+[numthreads(8, 8, 1)] void main(SPIRV_Cross_Input stage_input) {
+  gl_GlobalInvocationID = stage_input.gl_GlobalInvocationID;
+  comp_main();
+}

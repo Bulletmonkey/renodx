@@ -44,7 +44,7 @@ std::atomic_bool vfx_discovery_cache_active = false;
 std::atomic_bool vfx_readback_work_pending = false;
 std::once_flag vfx_readback_failure_log_once;
 
-constexpr size_t kVfxTextureBindingCount = 3u;
+constexpr size_t kVfxTextureBindingCount = 2u;
 using VfxTextureViews = std::array<uint64_t, kVfxTextureBindingCount>;
 
 std::shared_mutex vulkan_descriptor_mutex;
@@ -54,9 +54,8 @@ std::unordered_map<uint64_t, VfxTextureViews> vulkan_graphics_push_images_set_1;
 
 size_t GetTrackedVfxTextureBindingIndex(uint32_t binding) {
   switch (binding) {
-    case 2u: return 0u;
-    case 4u: return 1u;
-    case 8u: return 2u;
+    case 8u: return 0u;
+    case 12u: return 1u;
     default: return kVfxTextureBindingCount;
   }
 }
@@ -256,15 +255,15 @@ void InitializeCustomShaders() {
   // Activate only known HDR post-process outputs. Other RGBA8 resources,
   // including persistent snow data, remain on their original images.
   constexpr uint32_t post_process_shaders[] = {
-      0x0487B658, 0x10BC9694, 0x13C57353, 0x19410DCF,
-      0x260CB7DE, 0x2B3968F0, 0x36E19AC8, 0x4B3E474E,
-      0x56850F7A, 0x62334C44, 0x6D424A74, 0x719652B4,
-      0x7D7AFCEB, 0x8B13BC9B, 0x8B4A9C41, 0x8E6BF5FC,
-      0x8E8A5512, 0x9381A817, 0x948C5FB7, 0x96DD18A0,
-      0xB1925280, 0xB36DA950, 0xB6010B6B, 0xD2389A17,
-      0xD963D715, 0xE87BBC9E, 0xE928C915, 0xEDE92E55,
-      0xEF7FFAF0, 0xF02F2F18, 0xFE6983A2, 0xFF9919AD,
-      0xEF55D954,  // Post-process blit / optional sharpening, before UI.
+      0x071C2528u, 0x580F67D0u, 0x046ABF0Eu, 0xFADF3643u,
+      0x554DED63u, 0x8122C29Cu, 0x5CCD4219u, 0xF478CFB0u,
+      0x7AA78428u, 0xA5A4DFC6u, 0xD7D74BB1u, 0xE5DCBD02u,
+      0x3CCA98C7u, 0xDD13270Fu, 0x7198D951u, 0x9F531831u,
+      0x5A9D713Cu, 0x25384F38u, 0x7308D06Cu, 0x8296537Bu,
+      0xEE28F633u, 0x24BC5D5Du, 0xA71B71C5u, 0x3D4DA753u,
+      0x45099205u, 0x249C6796u, 0x8D3E49CCu, 0x0FDE5322u,
+      0x05B6EFDAu, 0xF89C0AB1u, 0xE43773D6u, 0x62ECFD08u,
+      0xEF55D954u,
   };
   for (const auto crc : post_process_shaders) {
     custom_shaders.at(crc).on_draw = UpgradePostProcessTarget;
@@ -565,10 +564,11 @@ struct VfxBoostMatch {
 };
 
 constexpr std::array vfx_boost_matches = {
-    VfxBoostMatch{0x881DB082u, 0x512923BCu, 2u},
-    VfxBoostMatch{0xAB12CDAEu, 0xF38B0BAAu, 2u},
-    VfxBoostMatch{0x5C327134u, 0xFA6BD53Au, 4u},
-    VfxBoostMatch{0x56EFE5ADu, 0x1A45F4EBu, 8u},
+    // Updated shaders moved the same primary effect textures to bindings 8/12.
+    VfxBoostMatch{0xB558A7D4u, 0x512923BCu, 8u},
+    VfxBoostMatch{0x72DE1B50u, 0xF38B0BAAu, 8u},
+    VfxBoostMatch{0xA548A396u, 0xFA6BD53Au, 8u},
+    VfxBoostMatch{0x49E37AF7u, 0x1A45F4EBu, 12u},
 };
 
 std::shared_mutex vfx_texture_mutex;
@@ -1076,29 +1076,48 @@ void OnDestroyVfxDevice(reshade::api::device* device) {
   vulkan_graphics_push_images_set_1.clear();
 }
 
-// Patch 1.5 adds four general UI permutations with the revised descriptor
-// layout. The separate 0x39F4860C permutation is handled by the shared
-// UID/ping path below so the latency-bar controls remain independent.
-constexpr std::array<uint32_t, 13> kVulkanUiVisibilityPixelShaderHashes = {
-    0xF952B899u,
-    0x0CF25D6Fu,
-    0x8D8CA241u,
-    0x4A58BC0Bu,
-    0x7D650384u,
-    0xAEC2747Bu,
-    0x934733E7u,
-    0x3961B617u,
-    0x89B77E6Du,
-    0x0BADCCF7u,
-    0x6F894992u,
-    0xB1DDA12Au,
-    0x0606C75Du,
+// Endfield 1.6 UI permutations. The shared UID/ping pass is handled
+// separately so its controls remain independent of general UI visibility.
+constexpr std::array<uint32_t, 125> kVulkanUiVisibilityPixelShaderHashes = {
+    0x0CF25D6Fu, 0xAEC2747Bu, 0x0BADCCF7u, 0x6F894992u,
+    0xB1DDA12Au, 0x0579B072u, 0x05B163CBu, 0x09B4A4E4u,
+    0x0FC51ACBu, 0x124253CBu, 0x174DB8DBu, 0x1E0803CFu,
+    0x240BB14Au, 0x26174B82u, 0x2E7E1CADu, 0x2EB2CB10u,
+    0x2F405F9Cu, 0x30C35A72u, 0x393EF1BFu, 0x3B225B5Au,
+    0x3C63C3C6u, 0x3CB56109u, 0x41EBB37Bu, 0x478BEB6Bu,
+    0x4ADD7166u, 0x50191995u, 0x5106276Au, 0x58DFBA22u,
+    0x5A1FB570u, 0x5BC3D18Cu, 0x5CA3B153u, 0x61153163u,
+    0x6392B8E5u, 0x6452D0B4u, 0x64C31822u, 0x69A9ACA9u,
+    0x6BFF49C0u, 0x6D095BA3u, 0x6DF4D552u, 0x6E15A96Bu,
+    0x6E213C0Du, 0x71877F10u, 0x74445A13u, 0x7932FFE3u,
+    0x7FEBE304u, 0x87761514u, 0x87978459u, 0x8A774BC0u,
+    0x909EE636u, 0x90D34513u, 0x97090220u, 0x9CE4BF71u,
+    0x9DE2F2CFu, 0xA145192Du, 0xA6D7F6F5u, 0xA6DC2512u,
+    0xA6F27FBBu, 0xAA0F7751u, 0xAEBFE572u, 0xB7696AF6u,
+    0xBC8570BEu, 0xCBBB8AA1u, 0xCBCF3570u, 0xCDC7598Cu,
+    0xD054944Fu, 0xD182C181u, 0xD1ECDC21u, 0xD56051DAu,
+    0xD87E5BB0u, 0xD8979521u, 0xD9016280u, 0xDED9BC60u,
+    0xE3672F63u, 0xE69A5D45u, 0xEE796902u, 0xEEEF81F2u,
+    0xF3D15245u, 0xF4A6C85Fu, 0xF528CF9Fu, 0xFB2A9B01u,
+    0xFB5815F4u, 0x09E9FD55u, 0xDCE1A4E9u,
+    // Native UI effects without the clipped per-draw struct in the pixel stage.
+    // Includes the live 0x7AE4A0D3 / 0x5756A062 UI-effect pipeline.
+    0x0553711Bu, 0x0AB1F2BAu, 0x0FEEEA1Cu, 0x12356458u,
+    0x151A1926u, 0x198F1971u, 0x1CC7A16Fu, 0x33FBB93Eu,
+    0x35846E1Bu, 0x3D36F169u, 0x419A525Eu, 0x43B04F4Bu,
+    0x47538FCFu, 0x4B0BCF8Bu, 0x511CEAA7u, 0x54D18FFCu,
+    0x5756A062u, 0x59A128D0u, 0x5E2ABBE4u, 0x6A6522B0u,
+    0x6CD649F6u, 0x7376AF6Fu, 0x7BBDF363u, 0x80DA17F7u,
+    0x817F40C0u, 0x89A55EC1u, 0x8BD537C1u, 0x8F8A6E12u,
+    0x8FEEACFFu, 0x977D6EA0u, 0x990B3A67u, 0xA27F9628u,
+    0xA6D06504u, 0xADE95EDFu, 0xBE00E127u, 0xC160C011u,
+    0xC67E53EFu, 0xC7AC6F81u, 0xED3C4B8Eu, 0xF16E213Cu,
+    0xFA5B9A36u, 0xFFFF5869u,
 };
 constexpr uint32_t kVulkanUidPixelShaderHash = 0xFF43F702u;
 constexpr uint32_t kVulkanSharedUidPingPixelShaderHash = 0x39F4860Cu;
-constexpr std::array<uint32_t, 2> kVulkanDirectHidePixelShaderHashes = {
+constexpr std::array<uint32_t, 1> kVulkanDirectHidePixelShaderHashes = {
     0xAB895B1Fu,
-    0xACF0F46Du,
 };
 
 struct VulkanPingShaderPair {
@@ -1106,16 +1125,15 @@ struct VulkanPingShaderPair {
   uint32_t pixel_shader_hash;
 };
 
-constexpr VulkanPingShaderPair kVulkanLatencyBarShaderPair = {
-    0xDB010722u,
-    0x512AB6E6u,
-};
 constexpr VulkanPingShaderPair kVulkanSharedUidPingShaderPair = {
     0xCC30F7F3u,
     kVulkanSharedUidPingPixelShaderHash,
 };
+// Live 1.6 sprite draw immediately preceding the shared UID/latency text pass.
+constexpr VulkanPingShaderPair kVulkanLatencyBarShaderPair = {
+    0xB698614Du, 0xDED9BC60u,
+};
 constexpr std::array kVulkanPingShaderPairs = {
-    kVulkanLatencyBarShaderPair,
     kVulkanSharedUidPingShaderPair,
 };
 
@@ -1186,32 +1204,6 @@ bool OnPingDraw(reshade::api::command_list* cmd_list) {
   return true;
 }
 
-bool InjectLatencyBarDrawOpacity(reshade::api::command_list* cmd_list) {
-  bool is_latency_bar_draw_candidate = false;
-  {
-    const std::lock_guard lock(ui_draw_detection_mutex);
-    const auto state = ui_draw_detection_states.find(GetCommandListKey(cmd_list));
-    is_latency_bar_draw_candidate = state != ui_draw_detection_states.end()
-        && state->second.is_latency_bar_draw_candidate;
-  }
-  shader_injection.latency_bar_draw_opacity = is_latency_bar_draw_candidate
-      ? shader_injection.ping_text_opacity
-      : 1.f;
-  // Use the current UI target, including transition targets, rather than the swapchain size.
-  shader_injection.latency_bar_viewport_width = 0.f;
-  shader_injection.latency_bar_viewport_height = 0.f;
-  const auto* viewport_state = renodx::utils::state::GetCurrentState(cmd_list);
-  if (viewport_state != nullptr && !viewport_state->viewports.empty()) {
-    const auto& viewport = viewport_state->viewports.front();
-    if (viewport.x == 0.f && std::min(viewport.y, viewport.y + viewport.height) == 0.f
-        && viewport.width > 0.f && viewport.height != 0.f) {
-      shader_injection.latency_bar_viewport_width = viewport.width;
-      shader_injection.latency_bar_viewport_height = std::abs(viewport.height);
-    }
-  }
-  return true;
-}
-
 bool OnUIDDraw(reshade::api::command_list* cmd_list) {
   bool is_uid_input_candidate = false;
   {
@@ -1250,6 +1242,29 @@ bool OnSharedUidPingDraw(reshade::api::command_list* cmd_list) {
   if (shader_injection.ui_visibility < 0.5f) return false;
   if (is_ping_input_candidate) return true;
   return OnUIDDraw(cmd_list);
+}
+
+bool InjectLatencyBarDrawOpacity(reshade::api::command_list* cmd_list) {
+  {
+    const std::lock_guard lock(ui_draw_detection_mutex);
+    const auto state = ui_draw_detection_states.find(GetCommandListKey(cmd_list));
+    shader_injection.latency_bar_draw_opacity =
+        state != ui_draw_detection_states.end() && state->second.is_latency_bar_draw_candidate
+        ? shader_injection.ping_text_opacity
+        : 1.f;
+  }
+  shader_injection.latency_bar_viewport_width = 0.f;
+  shader_injection.latency_bar_viewport_height = 0.f;
+  const auto* state = renodx::utils::state::GetCurrentState(cmd_list);
+  if (state != nullptr && !state->viewports.empty()) {
+    const auto& viewport = state->viewports.front();
+    if (viewport.x == 0.f && std::min(viewport.y, viewport.y + viewport.height) == 0.f
+        && viewport.width > 0.f && viewport.height != 0.f) {
+      shader_injection.latency_bar_viewport_width = viewport.width;
+      shader_injection.latency_bar_viewport_height = std::abs(viewport.height);
+    }
+  }
+  return true;
 }
 
 bool KeepOriginalShader(reshade::api::command_list* cmd_list) {
@@ -2138,7 +2153,7 @@ renodx::utils::settings::Settings settings = {
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
-        .label = "- Maintained by Rat for Arknights: Endfield 1.5",
+        .label = "- Maintained by Rat for Arknights: Endfield 1.6",
         .section = "About",
     },
     new renodx::utils::settings::Setting{
@@ -2262,17 +2277,22 @@ bool OnDrawIndexed(
       && vertex_shader_hash == kVulkanSharedUidPingShaderPair.vertex_shader_hash
       && pixel_shader_hash == kVulkanSharedUidPingShaderPair.pixel_shader_hash;
   if (is_latency_bar_draw_candidate || is_shared_uid_ping_draw_candidate) {
+    bool is_ping_input_candidate = false;
     {
       const std::lock_guard lock(ui_draw_detection_mutex);
       auto& state = ui_draw_detection_states[command_list_key];
       state.is_latency_bar_draw_candidate = is_latency_bar_draw_candidate;
       state.is_ping_input_candidate = state.draw_call_vertex_count == 0;
+      is_ping_input_candidate = state.is_ping_input_candidate;
       if (state.is_ping_input_candidate) {
         state.is_ping_drawn = true;
       }
       state.draw_call_vertex_count = 0;
     }
-    return false;
+    // This exact pair and three-quad draw are shared with UID text, so only
+    // consume the identified bar draw, not every draw using the pixel shader.
+    return is_shared_uid_ping_draw_candidate && is_ping_input_candidate
+        && (ui_hidden || !IsVisible(shader_injection.ping_text_opacity));
   }
 
   bool is_uid_input_candidate = false;
@@ -2297,7 +2317,7 @@ bool OnDrawIndexed(
   if (show_uid_text && show_latency_text) return false;
   if (!show_uid_text && !show_latency_text) return true;
 
-  DrawTextRegion(
+  return DrawTextRegion(
       cmd_list,
       index_count,
       instance_count,
@@ -2305,7 +2325,6 @@ bool OnDrawIndexed(
       vertex_offset,
       first_instance,
       show_latency_text);
-  return true;
 }
 
 // Classify or consume UI draws before shader callbacks can inject or replay them.
@@ -2449,6 +2468,8 @@ void UseRenoDXRuntime(DWORD fdw_reason) {
   endfield::renderer::UseOverlay(fdw_reason);
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     SetVfxBoostTrackingEnabled(IsVisible(shader_injection.perchannelblowout));
+    // UID/ping clipping needs the current UI scissor state.
+    renodx::utils::state::use_snapshot = true;
   }
   SyncSwapChainInjection();
   renodx::mods::swapchain::Use(fdw_reason, &swap_chain_injection);
@@ -2491,7 +2512,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       if (!initialized) {
         InitializeCustomShaders();
-        renodx::mods::shader::allow_multiple_push_constants = true;
+        renodx::mods::shader::allow_multiple_push_constants = false;
         renodx::mods::shader::minimum_constant_buffer_stages =
             reshade::api::shader_stage::vertex
             | reshade::api::shader_stage::pixel
@@ -2586,16 +2607,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             .usage_include = reshade::api::resource_usage::render_target,
             .name = "Endfield shader-selected HDR post-process intermediate",
         });
-
         constexpr std::array<uint32_t, 8> reshade_before_ui_crcs = {
-            0x1D89E872u,
-            0x93F0C75Cu,
-            0x9435BB16u,
-            0x8CA65275u,
-            0xECD5EC5Au,
-            0x8349AD92u,
-            0x1CD715AFu,
-            0x2DF0BFFAu,
+            0x4E327CFCu, 0x3AEAD136u, 0x2B455E28u, 0x1B28B6CCu,
+            0x1A15886Au, 0x133D5009u, 0xB0D5D8CDu, 0x223180CFu,
         };
         for (const uint32_t crc : reshade_before_ui_crcs) {
           auto it = custom_shaders.find(crc);
@@ -2608,11 +2622,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             it->second.on_drawn = ExecuteReshadeEffects;
           }
         }
-
         const uint32_t improved_gtao_crcs[] = {
-            0x02D76FA7u,  // GTAO main (Endfield 1.5 depth-reconstructed normal permutation)
-            0x902C57D5u,  // GTAO main
-            0xAC758574u,  // GTAO temporal
+            0x902C57D5u, 0xAC758574u, 0x02D76FA7u,
         };
         for (uint32_t crc : improved_gtao_crcs) {
           auto it = custom_shaders.find(crc);
@@ -2622,7 +2633,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         }
 
         {
-          auto it = custom_shaders.find(0x85BD40EFu);  // GTAO spatial average
+          auto it = custom_shaders.find(0x364E63F8u);  // GTAO spatial average
           if (it != custom_shaders.end()) {
             it->second.on_replace = ReplaceDisableGTAOShader;
           }
@@ -2659,6 +2670,16 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           RegisterUiVisibilityBypassShader(crc);
         }
         RegisterUidBypassShader(kVulkanUidPixelShaderHash);
+        custom_shaders.at(kVulkanLatencyBarShaderPair.pixel_shader_hash).on_replace =
+            [](reshade::api::command_list* cmd_list) {
+              if (IsVisible(shader_injection.ping_text_opacity)) return false;
+              const std::lock_guard lock(ui_draw_detection_mutex);
+              const auto state = ui_draw_detection_states.find(GetCommandListKey(cmd_list));
+              return state != ui_draw_detection_states.end()
+                  && state->second.is_latency_bar_draw_candidate;
+            };
+        custom_shaders.at(kVulkanLatencyBarShaderPair.pixel_shader_hash).on_inject =
+            InjectLatencyBarDrawOpacity;
 
         for (const auto& pair : kVulkanPingShaderPairs) {
           auto pixel_it = custom_shaders.find(pair.pixel_shader_hash);
@@ -2673,9 +2694,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             custom_shaders.emplace(pair.pixel_shader_hash, std::move(cs));
           } else {
             pixel_it->second.on_draw = on_draw;
-          }
-          if (pair.pixel_shader_hash == kVulkanLatencyBarShaderPair.pixel_shader_hash) {
-            custom_shaders.at(pair.pixel_shader_hash).on_inject = InjectLatencyBarDrawOpacity;
           }
         }
 

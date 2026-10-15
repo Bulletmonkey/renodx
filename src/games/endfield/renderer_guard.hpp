@@ -38,13 +38,29 @@ inline void Configure(renodx::mods::shader::CustomShaders* shaders) {
     if (api != kSupportedApi) renodx::mods::swapchain::ignored_device_apis.insert(api);
   }
   renodx::mods::shader::on_create_pipeline_layout =
-      [](reshade::api::device* device, std::span<reshade::api::pipeline_layout_param>) {
-        return IsSupported(device);
+      [](reshade::api::device* device, std::span<reshade::api::pipeline_layout_param> params) {
+        if (!IsSupported(device)) return false;
+        // Endfield replacements use an offset-zero block. Appending it after
+        // native constants both changes that ABI and can exceed the device limit.
+        for (const auto& param : params) {
+          if (param.type == reshade::api::pipeline_layout_param_type::push_constants) return false;
+        }
+        return true;
       };
   renodx::mods::shader::on_init_pipeline_layout =
       [](reshade::api::device* device, reshade::api::pipeline_layout,
-         std::span<const reshade::api::pipeline_layout_param>) {
-        return IsSupported(device);
+         std::span<const reshade::api::pipeline_layout_param> params) {
+        if (!IsSupported(device)) return false;
+        bool has_injection = false;
+        for (const auto& param : params) {
+          if (param.type != reshade::api::pipeline_layout_param_type::push_constants) continue;
+          if (has_injection || param.push_constants.binding != 0u
+              || param.push_constants.count != renodx::mods::shader::shader_injection_size
+              || param.push_constants.visibility != renodx::mods::shader::minimum_constant_buffer_stages) return false;
+          has_injection = true;
+        }
+        // Do not register an injection offset for layouts that were left native.
+        return has_injection;
       };
   for (auto& [hash, shader] : *shaders) {
     shader.on_replace = [callback = std::move(shader.on_replace)](auto* cmd_list) {

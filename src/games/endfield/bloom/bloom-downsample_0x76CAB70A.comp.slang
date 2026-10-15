@@ -9,7 +9,8 @@
 
 [[vk::binding(2, 0)]] SamplerState _7 : register(s2);
 [[vk::binding(1, 0)]] Texture2D<float4> _9 : register(t1);
-[[vk::binding(0, 0)]] RWTexture2D<float3> _11 : register(u0);
+// RenoDX: retain the native packed HDR storage-image format.
+[[vk::binding(0, 0)]] [[vk::image_format("r11f_g11f_b10f")]] RWTexture2D<float3> _11 : register(u0);
 
 static uint3 gl_WorkGroupID;
 static uint3 gl_LocalInvocationID;
