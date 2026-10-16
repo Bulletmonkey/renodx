@@ -118,7 +118,9 @@ void frag_main() {
       float3 _508 = clamp((_497 * ((_497 * 2.7850849628448486328125f) + 0.107772000133991241455078125f.xxx)) * clamp(1.0f.xxx / ((_497 * ((_497 * 2.9360449314117431640625f) + 0.887121975421905517578125f.xxx)) + 0.806888997554779052734375f.xxx), 9.9999997473787516355514526367188e-05f.xxx, 10000.0f.xxx), 0.0f.xxx, 1.0f.xxx);
   */
   float3 _508 = clamp((_497 * ((_497 * 2.7850849628448486328125f) + 0.107772000133991241455078125f.xxx)) * clamp(1.0f.xxx / ((_497 * ((_497 * 2.9360449314117431640625f) + 0.887121975421905517578125f.xxx)) + 0.806888997554779052734375f.xxx), 9.9999997473787516355514526367188e-05f.xxx, 10000.0f.xxx), 0.0f.xxx, 1.0f.xxx);
-  if (RENODX_TONE_MAP_TYPE != 0.f) {
+  if (RENODX_TONE_MAP_TYPE >= 2.f) {
+    _508 = _497;
+  } else if (RENODX_TONE_MAP_TYPE != 0.f) {
     float3 renodx_per_channel = float3(ACESLikeScalar(_497.x), ACESLikeScalar(_497.y), ACESLikeScalar(_497.z));
     float renodx_luminance = renodx::color::y::from::BT709(_497);
     float3 renodx_luminance_color = renodx::color::correct::Luminance(_497, renodx_luminance, ACESLikeScalar(renodx_luminance));

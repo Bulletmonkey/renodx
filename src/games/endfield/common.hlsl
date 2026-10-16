@@ -1,5 +1,6 @@
 #include "./shared.h"
 #include "../../shaders/color/macleod_boynton.hlsl"
+#include "./psychov31.hlsli"
 
 static inline float3 AutoHDRVideo(float3 sdr_video) {
   if (RENODX_TONE_MAP_TYPE == 0.f || RENODX_TONE_MAP_HDR_VIDEO == 0.f) {
@@ -348,7 +349,9 @@ float3 ApplySaturationBlowoutHueCorrectionHighlightSaturation(float3 tonemapped,
       color = renodx::color::bt709::from::BT2020(color_bt2020);
     }
 
-    color = renodx::color::bt709::clamp::AP1(color);
+    if (shader_injection.tone_map_type < 2.f) {
+      color = renodx::color::bt709::clamp::AP1(color);
+    }
 
     /* Old OKlab stuff
 
@@ -411,6 +414,7 @@ struct LUTSampleResult {
   float3 graded;
   float y;
   float3 graded_ap1;
+  float3 ungraded;
 };
 
 LUTSampleResult LUTSAMPLE(
@@ -419,7 +423,7 @@ LUTSampleResult LUTSAMPLE(
     Texture2D<float4> lut_texture,
     float3 sample_input) {
   [branch]
-  if (shader_injection.tone_map_type != 0.f) {
+  if (shader_injection.tone_map_type > 0.f && shader_injection.tone_map_type < 2.f) {
     UserGradingConfig cg_config = CreateColorGradeConfig();
     float sample_input_y = renodx::color::y::from::BT709(sample_input);
     sample_input = ApplyExposureContrastFlareHighlightsShadowsByLuminance(
@@ -428,14 +432,23 @@ LUTSampleResult LUTSAMPLE(
 
   renodx::lut::Config lut_config = renodx::lut::config::Create(
       lut_sampler,
-      shader_injection.color_grade_strength,
+      1.f,
       0.f,
       renodx::lut::config::type::ARRI_C1000_NO_CUT,
       renodx::lut::config::type::LINEAR,
       lut_size);
 
   LUTSampleResult result;
+  result.ungraded = sample_input;
   result.graded = renodx::lut::Sample(lut_texture, lut_config, sample_input);
+  if (shader_injection.tone_map_type > 0.f && shader_injection.tone_map_type < 2.f &&
+      (shader_injection.lut_color_strength != 1.f || shader_injection.lut_lightness != 1.f)) {
+    float3 reference_lab = renodx::color::oklab::from::BT709(sample_input);
+    float3 graded_lab = renodx::color::oklab::from::BT709(result.graded);
+    graded_lab.x = lerp(reference_lab.x, graded_lab.x, shader_injection.lut_lightness);
+    graded_lab.yz = lerp(reference_lab.yz, graded_lab.yz, shader_injection.lut_color_strength);
+    result.graded = renodx::color::bt709::clamp::AP1(renodx::color::bt709::from::OkLab(graded_lab));
+  }
   result.y = renodx::color::y::from::BT709(result.graded);
   result.graded_ap1 = renodx::color::ap1::from::BT709(result.graded);
   return result;
@@ -445,18 +458,58 @@ float3 SDRGRADE(LUTSampleResult lut_sample) {
   return lut_sample.graded;
 }
 
+float3 ApplyPsychoVGrading(float3 graded) {
+  float peak = shader_injection.peak_white_nits / shader_injection.diffuse_white_nits;
+  float anchor_out = min(0.18f, peak * 0.95f);
+  // Use PsychoV's anchored LMS grading instead of the Vanilla Extended grade.
+  float3 output = renodx::tonemap::psychov::custom_psychotm_test31(
+      renodx::color::bt709::clamp::AP1(graded), peak,
+      shader_injection.tone_map_exposure,
+      shader_injection.tone_map_highlights,
+      shader_injection.tone_map_shadows,
+      1.35304150f * shader_injection.tone_map_contrast,
+      0.10f * pow(shader_injection.tone_map_flare, 10.f),
+      1.f, 1.f,
+      shader_injection.tone_map_saturation,
+      shader_injection.tone_map_highlight_saturation,
+      shader_injection.tone_map_dechroma,
+      0.26545990f.xxx, anchor_out.xxx,
+      0.f, 1.f,
+      renodx::tonemap::psychov::CUSTOM_PSYCHO31_TARGET_GAMUT_BT2020,
+      1.5f,
+      1.f, 0.5f, 0.f,
+      renodx::tonemap::psychov::PSYCHO30_SOURCE_BOUNDARY_AP1, 1.f);
+  if (shader_injection.tone_map_hue_shift != 0.f || shader_injection.tone_map_blowout != 0.f) {
+    float3 reference = renodx::color::bt709::from::AP1(renodx::tonemap::ReinhardPiecewise(
+        renodx::color::ap1::from::BT709(output), 2.f, 0.18f));
+    output = CorrectHueAndPurityMBGated(
+        output, reference, shader_injection.tone_map_hue_shift, 0.5f, 1.f,
+        shader_injection.tone_map_blowout, 1.f);
+    output = renodx::color::bt709::clamp::AP1(output);
+  }
+  return output;
+}
+
 float3 HDRGRADE(LUTSampleResult lut_sample) {
-  float3 graded = lut_sample.graded;
-  float3 graded_ap1 = lut_sample.graded_ap1;
-  float y = lut_sample.y;
-
+  if (shader_injection.tone_map_type >= 2.f) {
+    // Keep the tone mapper and user grading active even when game grading is off.
+    bool bypass_lut = shader_injection.lut_lightness == 0.f && shader_injection.lut_color_strength == 0.f;
+    float3 output = ApplyPsychoVGrading(bypass_lut ? lut_sample.ungraded : lut_sample.graded);
+    if (bypass_lut || (shader_injection.lut_lightness == 1.f && shader_injection.lut_color_strength == 1.f)) {
+      return output;
+    }
+    float3 reference = ApplyPsychoVGrading(lut_sample.ungraded);
+    float3 reference_lab = renodx::color::oklab::from::BT709(reference);
+    float3 graded_lab = renodx::color::oklab::from::BT709(output);
+    graded_lab.x = lerp(reference_lab.x, graded_lab.x, shader_injection.lut_lightness);
+    graded_lab.yz = lerp(reference_lab.yz, graded_lab.yz, shader_injection.lut_color_strength);
+    output = renodx::color::bt709::from::OkLab(graded_lab);
+    return renodx::color::bt709::clamp::AP1(output);
+  }
   float3 hue_chrominance_reference_color =
-      renodx::color::bt709::from::AP1(renodx::tonemap::ReinhardPiecewise(graded_ap1, 2.f, 0.18f));
-
-  UserGradingConfig cg_config = CreateColorGradeConfig();
-
+      renodx::color::bt709::from::AP1(renodx::tonemap::ReinhardPiecewise(lut_sample.graded_ap1, 2.f, 0.18f));
   float3 output = ApplySaturationBlowoutHueCorrectionHighlightSaturation(
-      graded, hue_chrominance_reference_color, y, cg_config);
+      lut_sample.graded, hue_chrominance_reference_color, lut_sample.y, CreateColorGradeConfig());
   output = renodx::color::bt2020::from::BT709(output);
   output = renodx::tonemap::neutwo::MaxChannel(
       output, shader_injection.peak_white_nits / shader_injection.diffuse_white_nits, 65.f);
