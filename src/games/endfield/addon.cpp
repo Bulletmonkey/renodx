@@ -46,7 +46,7 @@ std::atomic_bool vfx_discovery_cache_active = false;
 std::atomic_bool vfx_readback_work_pending = false;
 std::once_flag vfx_readback_failure_log_once;
 
-constexpr size_t kVfxTextureBindingCount = 2u;
+constexpr size_t kVfxTextureBindingCount = 3u;
 using VfxTextureViews = std::array<uint64_t, kVfxTextureBindingCount>;
 
 std::shared_mutex vulkan_descriptor_mutex;
@@ -56,8 +56,9 @@ std::unordered_map<uint64_t, VfxTextureViews> vulkan_graphics_push_images_set_1;
 
 size_t GetTrackedVfxTextureBindingIndex(uint32_t binding) {
   switch (binding) {
-    case 8u: return 0u;
-    case 12u: return 1u;
+    case 2u: return 0u;
+    case 4u: return 1u;
+    case 8u: return 2u;
     default: return kVfxTextureBindingCount;
   }
 }
@@ -559,11 +560,11 @@ struct VfxBoostMatch {
 };
 
 constexpr std::array vfx_boost_matches = {
-    // Updated shaders moved the same primary effect textures to bindings 8/12.
-    VfxBoostMatch{0xB558A7D4u, 0x512923BCu, 8u},
-    VfxBoostMatch{0x72DE1B50u, 0xF38B0BAAu, 8u},
-    VfxBoostMatch{0xA548A396u, 0xFA6BD53Au, 8u},
-    VfxBoostMatch{0x49E37AF7u, 0x1A45F4EBu, 12u},
+    // Match each shader permutation to its primary effect texture.
+    VfxBoostMatch{0x6331B129u, 0x512923BCu, 2u},
+    VfxBoostMatch{0x0147D594u, 0xF38B0BAAu, 2u},
+    VfxBoostMatch{0xD20C403Eu, 0xFA6BD53Au, 4u},
+    VfxBoostMatch{0x5F07101Au, 0x1A45F4EBu, 8u},
 };
 
 std::shared_mutex vfx_texture_mutex;
