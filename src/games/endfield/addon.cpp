@@ -36,6 +36,7 @@
 #include "../../utils/swapchain.hpp"
 #include "./shared.h"
 #include "./renderer_guard.hpp"
+#include "./frame_generation.hpp"
 
 namespace {
 
@@ -278,20 +279,12 @@ static_assert(sizeof(ShaderInjectData) == 62u * sizeof(float));
 
 // Keep the fullscreen output pass on a compact push-constant payload while
 // game shader injection uses RenoDX's official Vulkan push-constant path.
-struct SwapChainInjectData {
-  float peak_white_nits;
-  float graphics_white_nits;
-  float swap_chain_decoding;
-  float swap_chain_gamma_correction;
-  float swap_chain_custom_color_space;
-  float swap_chain_clamp_color_space;
-  float swap_chain_encoding;
-  float swap_chain_encoding_color_space;
-};
+using SwapChainInjectData = endfield::frame_generation::OutputParameters;
 
 static_assert(sizeof(SwapChainInjectData) == 8u * sizeof(float));
 
 SwapChainInjectData swap_chain_injection;
+SwapChainInjectData frame_generation_injection;
 bool swap_chain_target_sync_pending = true;
 bool swap_chain_output_initialized = false;
 float requested_swap_chain_encoding = 4.f;
@@ -308,6 +301,7 @@ void SyncSwapChainInjection() {
       .swap_chain_encoding = shader_injection.swap_chain_encoding,
       .swap_chain_encoding_color_space = shader_injection.swap_chain_encoding_color_space,
   };
+  if (endfield::frame_generation::active_at_startup) frame_generation_injection = swap_chain_injection;
 }
 
 reshade::api::color_space GetSwapChainColorSpace(float encoding_value) {
@@ -2074,6 +2068,51 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 1; },
     },
     new renodx::utils::settings::Setting{
+        .key = "FrameGenSupportSetup",
+        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .label = "Enable Frame Gen Support",
+        .section = "Display Output",
+        .tooltip = "Add this addon to ReShade early loading. Restart the game, then enable DLSS FG support.",
+        .on_click = endfield::early_load::Enable,
+        .is_visible = [] { return !endfield::early_load::configured; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "FrameGenSupport",
+        .binding = &endfield::frame_generation::enabled,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .label = "Frame Gen Support",
+        .section = "Display Output",
+        .tooltip = "HDR support for DLSS Frame Generation. Restart after changes.",
+        .labels = {"Off", "DLSS FG"},
+        .on_change_value = [](float, float current) {
+          if (current < 0.5f) endfield::frame_generation::stopped.store(true);
+        },
+        .is_global = true,
+        .is_visible = [] { return endfield::early_load::configured; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "HDR10 output is required for Frame Gen Support. Select HDR10 and restart the game.",
+        .section = "Display Output",
+        .tint = 0xE6AD45,
+        .is_visible = [] {
+          return endfield::frame_generation::requested_at_startup
+                 && endfield::early_load::configured_at_startup && !endfield::frame_generation::active_at_startup;
+        },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "Restart game to apply Frame Gen Support changes.",
+        .section = "Display Output",
+        .tint = 0xE6AD45,
+        .is_visible = [] {
+          return (endfield::early_load::configured && !endfield::early_load::configured_at_startup)
+                 || endfield::frame_generation::stopped.load()
+                 || ((endfield::frame_generation::enabled >= 0.5f) != endfield::frame_generation::requested_at_startup);
+        },
+    },
+    new renodx::utils::settings::Setting{
         .key = "IntermediateDecoding",
         .binding = &shader_injection.intermediate_encoding,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
@@ -2364,6 +2403,11 @@ void OnPresent(reshade::api::command_queue* queue,
                uint32_t dirty_rect_count,
                const reshade::api::rect* dirty_rects) {
   if (!endfield::renderer::IsSupported(queue->get_device())) return;
+  if ((endfield::frame_generation::enabled < 0.5f || endfield::frame_generation::stopped.load())
+      && endfield::frame_generation::installed.load()) {
+    endfield::frame_generation::stopped.store(true);
+    endfield::frame_generation::StopHooks();
+  }
   static uint32_t random_state = 0x9E3779B9u;
   random_state = random_state * 1664525u + 1013904223u;
   shader_injection.custom_random = static_cast<float>(random_state >> 8u) / 16777216.f;
@@ -2419,6 +2463,12 @@ void OnPresent(reshade::api::command_queue* queue,
     // compact output payload is current before the proxy pass is submitted.
     SyncSwapChainInjection();
   }
+
+  if (endfield::frame_generation::active_at_startup && !endfield::frame_generation::installed.load()) {
+    static uint32_t retry_frame = 0u;
+    if (retry_frame++ % 120u == 0u) endfield::frame_generation::TryInstallHooks(device);
+  }
+  if (endfield::frame_generation::installed.load()) endfield::frame_generation::OnPresent(swapchain, &swap_chain_injection);
 
   if (device->get_api() == reshade::api::device_api::opengl) {
     shader_injection.custom_flip_uv_y = 1.f;
@@ -2492,7 +2542,12 @@ bool OnCreateVulkanDevice(reshade::api::device_api api, uint32_t& api_version) {
   reshade::log::message(
       reshade::log::level::info,
       "Initializing RenoDX runtime for the Vulkan device.");
+  if (endfield::frame_generation::active_at_startup) renodx::utils::pipeline::cache_subobjects = true;
   UseRenoDXRuntime(DLL_PROCESS_ATTACH);
+  if (endfield::frame_generation::active_at_startup) {
+    endfield::frame_generation::output_parameters = &frame_generation_injection;
+    endfield::frame_generation::Use(DLL_PROCESS_ATTACH);
+  }
   reshade::register_event<reshade::addon_event::init_swapchain>(OnInitSwapChainOutput);
   return false;
 }
@@ -2502,6 +2557,19 @@ bool OnCreateVulkanDevice(reshade::api::device_api api, uint32_t& api_version) {
 extern "C" __declspec(dllexport) constexpr const char* NAME = "RenoDX: Arknights Endfield (Vulkan)";
 extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION = "RenoDX Vulkan renderer port for Arknights: Endfield";
 
+// A scalar capability query lets the Enhancer defer to the renderer before device callbacks run.
+extern "C" __declspec(dllexport) BOOL RenoDXEndfieldOwnsHDRFrameGeneration() {
+  return endfield::frame_generation::active_at_startup;
+}
+
+extern "C" __declspec(dllexport) void AddonUninit(HMODULE, HMODULE) {
+  if (!renodx_runtime_attached) return;
+  endfield::frame_generation::Use(DLL_PROCESS_DETACH);
+  reshade::unregister_event<reshade::addon_event::init_swapchain>(OnInitSwapChainOutput);
+  UseRenoDXRuntime(DLL_PROCESS_DETACH);
+  renodx_runtime_attached = false;
+}
+
 BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
   if (fdw_reason == DLL_THREAD_ATTACH || fdw_reason == DLL_THREAD_DETACH) return TRUE;
   if (!IsEndfieldProcess()) return TRUE;
@@ -2510,6 +2578,24 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
     case DLL_PROCESS_ATTACH:
       if (!reshade::register_addon(h_module)) return FALSE;
 
+      {
+        endfield::early_load::addon_module = h_module;
+        reshade::get_config_value(nullptr, "renodx", "FrameGenSupport", endfield::frame_generation::enabled);
+        endfield::frame_generation::requested_at_startup = endfield::frame_generation::enabled >= 0.5f;
+        float encoding = 4.f;
+        if (endfield::frame_generation::requested_at_startup) {
+          endfield::early_load::Refresh();
+          endfield::early_load::configured_at_startup = endfield::early_load::configured;
+          reshade::get_config_value(nullptr, "renodx", "SwapChainEncoding", encoding);
+        }
+        reshade::register_event<reshade::addon_event::init_effect_runtime>(endfield::early_load::OnInitEffectRuntime);
+        endfield::frame_generation::active_at_startup = endfield::frame_generation::requested_at_startup
+            && endfield::early_load::configured_at_startup && encoding == 4.f;
+        reshade::log::message(reshade::log::level::info,
+                              endfield::frame_generation::active_at_startup
+                                  ? "Endfield: frame generation requested with early loading and HDR10."
+                                  : "Endfield: frame generation inactive; no frame-generation hooks or callbacks registered.");
+      }
       if (!initialized) {
         InitializeCustomShaders();
         renodx::mods::shader::allow_multiple_push_constants = false;
@@ -2705,6 +2791,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       break;
     case DLL_PROCESS_DETACH:
+      reshade::unregister_event<reshade::addon_event::init_effect_runtime>(endfield::early_load::OnInitEffectRuntime);
+      endfield::frame_generation::Use(DLL_PROCESS_DETACH);
       reshade::unregister_event<reshade::addon_event::create_device>(OnCreateVulkanDevice);
       reshade::unregister_event<reshade::addon_event::init_swapchain>(OnInitSwapChainOutput);
       reshade::unregister_event<reshade::addon_event::reset_command_list>(
