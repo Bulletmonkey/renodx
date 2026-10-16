@@ -1768,8 +1768,9 @@ renodx::utils::settings::Settings settings = {
             memcpy(buf, key_name.c_str(), copy_len);
           }
 
+          ImGui::SetNextItemWidth(std::max(1.f, ImGui::GetContentRegionAvail().x - endfield::menu::label_width - ImGui::GetFrameHeight() - ImGui::GetStyle().ItemSpacing.x * 2.f));
           ImGui::InputTextWithHint(
-              "UI Toggle Hotkey",
+              endfield::menu::ControlLabel("UI Toggle Hotkey", endfield::menu::label_width).c_str(),
               "Click to set keyboard shortcut",
               buf,
               sizeof(buf),
@@ -1844,7 +1845,7 @@ renodx::utils::settings::Settings settings = {
         .key = "fxRCASAmount",
         .binding = &shader_injection.fx_rcas_amount,
         .default_value = 50.f,
-        .label = "RCAS Sharpening Amount",
+        .label = "Sharpening Strength",
         .section = "Effects",
         .tooltip = "Adjusts RCAS sharpening strength.",
         .max = 100.f,
@@ -1855,7 +1856,7 @@ renodx::utils::settings::Settings settings = {
             .key = "FxGrainStrength",
             .binding = &shader_injection.custom_grain_strength,
             .default_value = 0.f,
-            .label = "Perceptual Grain Strength",
+            .label = "Film Grain",
             .section = "Effects",
             .parse = [](float value) { return value * 0.01f; },
         }),
@@ -1927,10 +1928,10 @@ renodx::utils::settings::Settings settings = {
         .binding = &shader_injection.perchannelblowout,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 0.f,
-        .label = "VFX Boost (Experimental)",
+        .label = "VFX Boost",
         .section = "Rendering Improvements",
         .tooltip = "Boosts supported VFX highlights.",
-        .labels = {"Original", "Enhanced"},
+        .labels = {"Original", "Improved"},
         .on_change_value = [](float, float current) {
           SetVfxBoostTrackingEnabled(IsVisible(current));
         },
@@ -1971,7 +1972,7 @@ renodx::utils::settings::Settings settings = {
         .binding = &shader_injection.fake_cloud_shadows,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 1.f,
-        .label = "Vanilla Fake Cloud Shadows",
+        .label = "Cloud Shadows",
         .section = "Rendering Improvements",
         .tooltip = "Toggles fake cloud shadows",
         .labels = {"Off", "On / Vanilla"},
@@ -2026,7 +2027,7 @@ renodx::utils::settings::Settings settings = {
         .binding = &shader_injection.improved_gtao,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 1.f,
-        .label = "GTAO + Visibility Bitmask + Deferred AO Modulation",
+        .label = "Improved GTAO",
         .section = "Rendering Improvements",
         .tooltip = "Improves vanilla GTAO with visibility bitmask and AO modulation on direct lights (spotlights, point lights).",
         .labels = {"Original", "Improved"},
@@ -2181,6 +2182,14 @@ renodx::utils::settings::Settings settings = {
         .format = "%.0f FPS",
         .parse = [](float value) { return value <= 0.f ? 0.f : std::clamp(value, 15.f, 480.f); },
         .is_global = true,
+        .is_visible = [] { return false; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+        .label = "FPS Limit",
+        .section = "FPS Limit",
+        .on_draw = [] { return endfield::menu::DrawFpsLimit("FPSLimit", {60, 120, 180}); },
+        .is_global = true,
     },
     new renodx::utils::settings::Setting{
         .key = "FrameGenerationFPSLimit",
@@ -2195,6 +2204,14 @@ renodx::utils::settings::Settings settings = {
         .format = "%.0f FPS",
         .parse = [](float value) { return value <= 0.f ? 0.f : std::clamp(value, 15.f, 480.f); },
         .is_global = true,
+        .is_visible = [] { return false; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+        .label = "Framegen FPS Limit",
+        .section = "FPS Limit",
+        .on_draw = [] { return endfield::menu::DrawFpsLimit("FrameGenerationFPSLimit", {120, 240, 360}); },
+        .is_global = true,
     },
     new renodx::utils::settings::Setting{
         .key = "BackgroundFPSLimit",
@@ -2208,6 +2225,14 @@ renodx::utils::settings::Settings settings = {
         .max = 120.f,
         .format = "%.0f FPS",
         .parse = [](float value) { return value <= 0.f ? 0.f : std::clamp(value, 15.f, 120.f); },
+        .is_global = true,
+        .is_visible = [] { return false; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+        .label = "Background FPS Limit",
+        .section = "FPS Limit",
+        .on_draw = [] { return endfield::menu::DrawFpsLimit("BackgroundFPSLimit", {30, 60, 120}); },
         .is_global = true,
     },
     new renodx::utils::settings::Setting{
@@ -2224,49 +2249,107 @@ renodx::utils::settings::Settings settings = {
         },
     },
     new renodx::utils::settings::Setting{
-        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+        .label = "About RenoDX Endfield",
+        .section = "About",
+        .on_draw = [] {
+          endfield::menu::DrawAbout();
+          return false;
+        },
+        .is_global = true,
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "Community",
+        .section = "Links",
+        .tint = 0x5865F2,
+        .is_global = true,
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
         .label = "Discord",
         .section = "Links",
-        .group = "button-line-1",
+        .group = "community",
+        .tooltip = "https://discord.com/invite/renodx",
         .tint = 0x5865F2,
-        .on_change = []() {
-          renodx::utils::platform::LaunchURL("https://discord.gg/", "5WZXDpmbpP");
+        .on_draw = [] {
+          return endfield::menu::DrawLink("Discord", "https://discord.com/invite/", "renodx", 0x5865F2, 1);
         },
+        .is_global = true,
     },
     new renodx::utils::settings::Setting{
-        .value_type = renodx::utils::settings::SettingValueType::BUTTON,
+        .value_type = renodx::utils::settings::SettingValueType::TEXT,
+        .label = "Mods & Source",
+        .section = "Links",
+        .tint = 0xA6B1C2,
+        .is_global = true,
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+        .label = "GitHub",
+        .section = "Links",
+        .group = "mods",
+        .tooltip = "https://github.com/ItsTheSewerRat/RenoDX",
+        .tint = 0x2B3137,
+        .on_draw = [] {
+          return endfield::menu::DrawLink("GitHub", "https://github.com/", "ItsTheSewerRat/RenoDX", 0x2B3137, 2);
+        },
+        .is_global = true,
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
         .label = "More Mods",
         .section = "Links",
-        .group = "button-line-1",
+        .group = "mods",
+        .tooltip = "https://github.com/clshortfuse/renodx/wiki/Mods",
         .tint = 0x2B3137,
-        .on_change = []() {
-          renodx::utils::platform::LaunchURL("https://github.com/", "clshortfuse/renodx/wiki/Mods");
+        .on_draw = [] {
+          return endfield::menu::DrawLink("More Mods", "https://github.com/", "clshortfuse/renodx/wiki/Mods", 0x2B3137, 1);
         },
+        .is_global = true,
     },
     new renodx::utils::settings::Setting{
         .value_type = renodx::utils::settings::SettingValueType::TEXT,
-        .label = "- Addon developed by Spiwar & Forge.",
-        .section = "About",
+        .label = "Support",
+        .section = "Links",
+        .tint = 0xFF5A16,
+        .is_global = true,
     },
     new renodx::utils::settings::Setting{
-        .value_type = renodx::utils::settings::SettingValueType::TEXT,
-        .label = "- Maintained by Rat for Arknights: Endfield 1.6",
-        .section = "About",
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+        .label = "Ko-fi Rat",
+        .section = "Links",
+        .group = "support",
+        .tooltip = "https://ko-fi.com/itsarat",
+        .tint = 0xFF5A16,
+        .on_draw = [] {
+          return endfield::menu::DrawLink("Ko-fi Rat", "https://ko-fi.com/", "itsarat", 0xFF5A16, 3);
+        },
+        .is_global = true,
     },
     new renodx::utils::settings::Setting{
-        .value_type = renodx::utils::settings::SettingValueType::TEXT,
-        .label = std::string("- Special thanks to both Musa & Miru for helping with the addon"),
-        .section = "About",
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+        .label = "Ko-fi ShortFuse",
+        .section = "Links",
+        .group = "support",
+        .tooltip = "https://ko-fi.com/shortfuse",
+        .tint = 0xFF5A16,
+        .on_draw = [] {
+          return endfield::menu::DrawLink("Ko-fi ShortFuse", "https://ko-fi.com/", "shortfuse", 0xFF5A16, 2);
+        },
+        .is_global = true,
     },
     new renodx::utils::settings::Setting{
-        .value_type = renodx::utils::settings::SettingValueType::TEXT,
-        .label = std::string("- Many thanks to ShortFuse for RenoDX"),
-        .section = "About",
-    },
-    new renodx::utils::settings::Setting{
-        .value_type = renodx::utils::settings::SettingValueType::TEXT,
-        .label = "- This build was compiled on " + build_date + " at " + build_time + ".",
-        .section = "About",
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+        .label = "Ko-fi Spiwar",
+        .section = "Links",
+        .group = "support",
+        .tooltip = "https://ko-fi.com/spiwar",
+        .tint = 0xFF5A16,
+        .on_draw = [] {
+          return endfield::menu::DrawLink("Ko-fi Spiwar", "https://ko-fi.com/", "spiwar", 0xFF5A16, 1);
+        },
+        .is_global = true,
     },
 };
 
@@ -2573,7 +2656,19 @@ bool initialized = false;
 bool renodx_runtime_attached = false;
 
 void UseRenoDXRuntime(DWORD fdw_reason) {
-  renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff);
+  renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff, [] {
+    reshade::set_config_value(nullptr, "renodx", "SelectedPreset", renodx::utils::settings::preset_index);
+  });
+  if (fdw_reason == DLL_PROCESS_ATTACH) {
+    int selected = 1;
+    reshade::get_config_value(nullptr, "renodx", "SelectedPreset", selected);
+    renodx::utils::settings::preset_index = std::clamp(selected, 0, 3);
+    if (renodx::utils::settings::preset_index == 0) {
+      OnPresetOff();
+    } else if (renodx::utils::settings::preset_index != 1) {
+      renodx::utils::settings::LoadSettings(renodx::utils::settings::GetCurrentPresetName());
+    }
+  }
   endfield::renderer::UseOverlay(fdw_reason);
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     SetVfxBoostTrackingEnabled(IsVisible(shader_injection.perchannelblowout));
@@ -2615,7 +2710,7 @@ bool OnCreateVulkanDevice(reshade::api::device_api api, uint32_t& api_version) {
 
 }  // namespace
 
-extern "C" __declspec(dllexport) constexpr const char* NAME = "RenoDX: Arknights Endfield (Vulkan)";
+extern "C" __declspec(dllexport) constexpr const char* NAME = "RenoDX: Arknights Endfield";
 extern "C" __declspec(dllexport) constexpr const char* DESCRIPTION = "RenoDX Vulkan renderer port for Arknights: Endfield";
 
 // A scalar capability query lets the Enhancer defer to the renderer before device callbacks run.
@@ -2847,6 +2942,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           }
         }
 
+        endfield::menu::Configure(&settings);
         endfield::renderer::Configure(&custom_shaders);
         initialized = true;
       }

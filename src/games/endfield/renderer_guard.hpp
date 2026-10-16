@@ -6,6 +6,7 @@
 #include "../../mods/shader.hpp"
 #include "../../mods/swapchain.hpp"
 #include "../../utils/settings.hpp"
+#include "./menu.hpp"
 
 namespace endfield::renderer {
 
@@ -17,7 +18,7 @@ inline bool IsSupported(reshade::api::device* device) {
 
 inline void OnOverlay(reshade::api::effect_runtime* runtime) {
   if (!IsSupported(runtime->get_device())) return;
-  renodx::utils::settings::OnRegisterOverlay(runtime);
+  endfield::menu::Draw(runtime);
 }
 
 inline void OnInitEffectRuntime(reshade::api::effect_runtime* runtime) {
