@@ -32,6 +32,7 @@
 #include "../../mods/swapchain.hpp"
 #include "../../utils/render.hpp"
 #include "../../utils/resource_upgrade.hpp"
+#include "./frame_rate.hpp"
 
 namespace endfield::frame_generation {
 
@@ -633,28 +634,6 @@ inline void UseEvents(DWORD reason) {
 }
 
 
-static sl::Result HookSetOptions(const sl::ViewportHandle& viewport, const sl::DLSSGOptions& options) {
-  __try {
-    sl::DLSSGOptions forwarded;
-    size_t size = 0;
-    switch (options.structVersion) {
-      case 1:  size = offsetof(sl::DLSSGOptions, bReserved15); break;
-      case 2:  size = offsetof(sl::DLSSGOptions, bReserved15) + sizeof(sl::Boolean); break;
-      case 3:  size = offsetof(sl::DLSSGOptions, queueParallelismMode) + sizeof(sl::DLSSGQueueParallelismMode); break;
-      case 4:  size = offsetof(sl::DLSSGOptions, enableUserInterfaceRecomposition) + sizeof(sl::Boolean); break;
-      case 5:  size = sizeof(sl::DLSSGOptions); break;
-      default: return sl::Result::eErrorInvalidParameter;
-    }
-    std::memcpy(static_cast<void*>(&forwarded), &options, size);
-    // Preserve native UI recomposition, tags, extension chain and all other options.
-    forwarded.colorBufferFormat = 64u;  // VK_FORMAT_A2B10G10R10_UNORM_PACK32
-    const auto result = set_options(viewport, forwarded);
-    return result;
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return sl::Result::eErrorExceptionHandler;
-  }
-}
-
 static VkResult VKAPI_CALL HookCreateSwapchain(VkDevice device, const VkSwapchainCreateInfoKHR* info,
                                                const VkAllocationCallbacks* allocator, VkSwapchainKHR* swapchain) {
   if (info == nullptr) return create_swapchain(device, info, allocator, swapchain);
@@ -709,11 +688,16 @@ static void TryInstallHooks(reshade::api::device* device) {
       || (pipeline_barrier2 != nullptr && !is_host_code(reinterpret_cast<const void*>(pipeline_barrier2)))) return;
   get_images = reinterpret_cast<PFN_vkGetSwapchainImagesKHR>(GetProcAddress(interposer, "vkGetSwapchainImagesKHR"));
   acquire_image = reinterpret_cast<PFN_vkAcquireNextImageKHR>(GetProcAddress(interposer, "vkAcquireNextImageKHR"));
-  hooks = {{set_options, HookSetOptions, &set_options}, {create_swapchain, HookCreateSwapchain, &create_swapchain}, {get_images, HookGetImages, &get_images}, {acquire_image, HookAcquire, &acquire_image}, {pipeline_barrier, HookBarrier, &pipeline_barrier}};
+  hooks = {{set_options, frame_rate::HookSetOptions, &frame_rate::set_options}, {create_swapchain, HookCreateSwapchain, &create_swapchain}, {get_images, HookGetImages, &get_images}, {acquire_image, HookAcquire, &acquire_image}, {pipeline_barrier, HookBarrier, &pipeline_barrier}};
   if (pipeline_barrier2 != nullptr) hooks.emplace_back(pipeline_barrier2, HookBarrier2, &pipeline_barrier2);
   try {
+    const std::unique_lock fps_lock(frame_rate::mutex);
+    frame_rate::StopDetection();
+    if (!frame_rate::hooks.empty()) return;
+    frame_rate::hdr_options.store(true);
     native_hooks::Apply(hooks, true);
   } catch (const std::exception& error) {
+    frame_rate::hdr_options.store(false);
     reshade::log::message(reshade::log::level::error, error.what());
     return;
   }
@@ -746,6 +730,7 @@ static void StopHooks() {
     return;
   }
   installed.store(false);
+  frame_rate::hdr_options.store(false);
   const std::lock_guard lock(mutex);
   for (auto& [handle, image] : images) {
     if (image->active) SetCloneActive(image.get(), false);

@@ -2153,6 +2153,64 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return false; },
     },
     new renodx::utils::settings::Setting{
+        .key = "FPSUnlock",
+        .binding = &endfield::frame_rate::unlock,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "FPS Unlock",
+        .section = "FPS Limit",
+        .tooltip = "Removes the game's FPS cap and VSync.",
+        .labels = {"Off", "On"},
+        .on_change_value = [](float, float current) {
+          const std::unique_lock lock(endfield::frame_rate::mutex);
+          endfield::frame_rate::UpdateUnlock(current >= 0.5f);
+        },
+        .is_global = true,
+    },
+    new renodx::utils::settings::Setting{
+        .key = "FPSLimit",
+        .binding = &endfield::frame_rate::limit,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "FPS Limit",
+        .section = "FPS Limit",
+        .tooltip = "Limits gameplay FPS.",
+        .min = 0.f,
+        .max = 480.f,
+        .format = "%.0f FPS",
+        .parse = [](float value) { return value <= 0.f ? 0.f : std::clamp(value, 15.f, 480.f); },
+        .is_global = true,
+    },
+    new renodx::utils::settings::Setting{
+        .key = "FrameGenerationFPSLimit",
+        .binding = &endfield::frame_rate::fg_limit,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "Framegen FPS Limit",
+        .section = "FPS Limit",
+        .tooltip = "Limits FPS with Frame Generation.",
+        .min = 0.f,
+        .max = 480.f,
+        .format = "%.0f FPS",
+        .parse = [](float value) { return value <= 0.f ? 0.f : std::clamp(value, 15.f, 480.f); },
+        .is_global = true,
+    },
+    new renodx::utils::settings::Setting{
+        .key = "BackgroundFPSLimit",
+        .binding = &endfield::frame_rate::background_limit,
+        .default_value = 0.f,
+        .can_reset = false,
+        .label = "Background FPS Limit",
+        .section = "FPS Limit",
+        .tooltip = "Limits FPS while tabbed out.",
+        .min = 0.f,
+        .max = 120.f,
+        .format = "%.0f FPS",
+        .parse = [](float value) { return value <= 0.f ? 0.f : std::clamp(value, 15.f, 120.f); },
+        .is_global = true,
+    },
+    new renodx::utils::settings::Setting{
         .key = "TechTestLook",
         .binding = &shader_injection.tech_test_look,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
@@ -2408,6 +2466,7 @@ void OnPresent(reshade::api::command_queue* queue,
     endfield::frame_generation::stopped.store(true);
     endfield::frame_generation::StopHooks();
   }
+  endfield::frame_rate::OnPresent(swapchain, endfield::frame_generation::installed.load());
   static uint32_t random_state = 0x9E3779B9u;
   random_state = random_state * 1664525u + 1013904223u;
   shader_injection.custom_random = static_cast<float>(random_state >> 8u) / 16777216.f;
@@ -2549,6 +2608,8 @@ bool OnCreateVulkanDevice(reshade::api::device_api api, uint32_t& api_version) {
     endfield::frame_generation::Use(DLL_PROCESS_ATTACH);
   }
   reshade::register_event<reshade::addon_event::init_swapchain>(OnInitSwapChainOutput);
+  reshade::register_event<reshade::addon_event::init_swapchain>(endfield::frame_rate::OnSwapchainReset);
+  reshade::register_event<reshade::addon_event::destroy_swapchain>(endfield::frame_rate::OnSwapchainReset);
   return false;
 }
 
@@ -2564,6 +2625,9 @@ extern "C" __declspec(dllexport) BOOL RenoDXEndfieldOwnsHDRFrameGeneration() {
 
 extern "C" __declspec(dllexport) void AddonUninit(HMODULE, HMODULE) {
   if (!renodx_runtime_attached) return;
+  endfield::frame_rate::Shutdown();
+  reshade::unregister_event<reshade::addon_event::init_swapchain>(endfield::frame_rate::OnSwapchainReset);
+  reshade::unregister_event<reshade::addon_event::destroy_swapchain>(endfield::frame_rate::OnSwapchainReset);
   endfield::frame_generation::Use(DLL_PROCESS_DETACH);
   reshade::unregister_event<reshade::addon_event::init_swapchain>(OnInitSwapChainOutput);
   UseRenoDXRuntime(DLL_PROCESS_DETACH);
@@ -2791,6 +2855,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
 
       break;
     case DLL_PROCESS_DETACH:
+      if (lpv_reserved == nullptr) endfield::frame_rate::Shutdown();
+      reshade::unregister_event<reshade::addon_event::init_swapchain>(endfield::frame_rate::OnSwapchainReset);
+      reshade::unregister_event<reshade::addon_event::destroy_swapchain>(endfield::frame_rate::OnSwapchainReset);
       reshade::unregister_event<reshade::addon_event::init_effect_runtime>(endfield::early_load::OnInitEffectRuntime);
       endfield::frame_generation::Use(DLL_PROCESS_DETACH);
       reshade::unregister_event<reshade::addon_event::create_device>(OnCreateVulkanDevice);
