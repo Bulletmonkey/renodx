@@ -234,7 +234,7 @@ static void Configure(renodx::utils::settings::Settings* settings) {
       setting->tint = PAGE_COLORS[setting_page];
       if (setting->section == "Rendering Improvements") setting->tint = 0x57B881;
       else if (setting->section == "Color Grading") setting->tint = 0x2A9D8F;
-      else if (setting->section == "Alternative Grading") setting->tint = 0xF4A261;
+      else if (setting->section == "Grading Presets") setting->tint = 0xF4A261;
     }
     setting->is_visible = [setting, setting_page, visible = std::move(setting->is_visible)] {
       if (visible && !visible()) return false;

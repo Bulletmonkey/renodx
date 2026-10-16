@@ -476,8 +476,14 @@ void UpdateReshadeResolutionUniforms(
 
 static bool bypass_render_active = false;
 
-static int pending_tech_test_preset = -1;
-static float prev_tech_test_look = -1.f;
+static int pending_grading_preset = -1;
+static float active_grading_preset = 3.f;
+static float prev_tone_map_type = -1.f;
+static std::atomic_uint64_t tone_mapper_warning_until = 0;
+constexpr float VANILLA_HUE_SHIFT = 85.f;
+constexpr float VANILLA_PER_CHANNEL_BLOWOUT = 75.f;
+constexpr float PSYCHOV_HUE_SHIFT = 75.f;
+constexpr float PSYCHOV_PER_CHANNEL_BLOWOUT = 15.f;
 
 void OnReshadeBeginEffects(reshade::api::effect_runtime* runtime,
                            reshade::api::command_list* cmd_list,
@@ -1460,6 +1466,20 @@ renodx::utils::settings::Settings settings = {
         .is_visible = []() { return current_settings_mode >= 1; },
     },
     new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+        .label = "Tone Mapper Reload Warning",
+        .section = "Tone Mapping",
+        .on_draw = [] {
+          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.75f, 0.3f, 1.f));
+          ImGui::TextWrapped("Tone mapper changed: restart the game or return to the login screen to rebuild the color LUT.");
+          ImGui::PopStyleColor();
+          return false;
+        },
+        .is_visible = [] {
+          return GetTickCount64() < tone_mapper_warning_until.load(std::memory_order_relaxed);
+        },
+    },
+    new renodx::utils::settings::Setting{
         .key = "ToneMapPeakNits",
         .binding = &shader_injection.peak_white_nits,
         .default_value = 1000.f,
@@ -1515,7 +1535,7 @@ renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
         .key = "ToneMapHueShift",
         .binding = &shader_injection.tone_map_hue_shift,
-        .default_value = 85.f,
+        .default_value = VANILLA_HUE_SHIFT,
         .label = "Hue Shift",
         .section = "Tone Mapping",
         .tooltip = "Hue-shift emulation strength.",
@@ -1527,7 +1547,7 @@ renodx::utils::settings::Settings settings = {
     new renodx::utils::settings::Setting{
         .key = "ToneMapPerChannelBlowout",
         .binding = &shader_injection.tone_map_blowout,
-        .default_value = 75.f,
+        .default_value = VANILLA_PER_CHANNEL_BLOWOUT,
         .label = "Per Channel Blowout",
         .section = "Tone Mapping",
         .tooltip = "Per Channel Blowout strength.",
@@ -1824,16 +1844,6 @@ renodx::utils::settings::Settings settings = {
         .max = 100.f,
     },
     new renodx::utils::settings::Setting{
-        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
-        .label = std::string("Reshade shader bypass, applies on_drawn after game's deferred lighting pass. Only properly works with DLAA/TAAU 100 scaling atm"),
-        .on_draw = []() {
-          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.0f, 0.0f, 1.0f));
-          ImGui::TextWrapped("Reshade shader bypass, applies on_drawn after game's deferred lighting pass. Only properly works with DLAA/TAAU 100 scaling atm");
-          ImGui::PopStyleColor();
-          return false;
-        },
-    },
-        new renodx::utils::settings::Setting{
         .key = "RenderReshadeBeforeUI",
         .binding = &current_render_reshade_before_ui,
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
@@ -1842,6 +1852,17 @@ renodx::utils::settings::Settings settings = {
         .section = "Effects",
         .tooltip = "Executes ReShade effects before UI is drawn.",
         .labels = {"Off", "On"},
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+        .label = std::string("Reshade shader bypass, applies on_drawn after game's deferred lighting pass. Only properly works with DLAA/TAAU 100 scaling atm"),
+        .section = "Effects",
+        .on_draw = []() {
+          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.0f, 0.0f, 1.0f));
+          ImGui::TextWrapped("Reshade shader bypass, applies on_drawn after game's deferred lighting pass. Only properly works with DLAA/TAAU 100 scaling atm");
+          ImGui::PopStyleColor();
+          return false;
+        },
     },
     new renodx::utils::settings::Setting{
         .key = "DisableGameAO",
@@ -2171,11 +2192,40 @@ renodx::utils::settings::Settings settings = {
         .value_type = renodx::utils::settings::SettingValueType::INTEGER,
         .default_value = 0.f,
         .label = "Tech Test Look",
-        .section = "Alternative Grading",
-        .tooltip = "Activates visual adjustments to match the 2024 tech test aesthetic",
-        .labels = {"Off", "On"},
-        .on_change_value = [](float previous, float current) {
-          if (current >= 1.f) pending_tech_test_preset = 1;
+        .section = "Grading Presets",
+        .is_visible = [] { return false; },
+    },
+    new renodx::utils::settings::Setting{
+        .key = "GradingPreset",
+        .binding = &active_grading_preset,
+        .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+        .default_value = 3.f,
+        .label = "Grading Preset",
+        .section = "Grading Presets",
+        .is_visible = [] { return false; },
+    },
+    new renodx::utils::settings::Setting{
+        .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+        .label = "Reset / Vanilla / Tech Test Look / HDR Look",
+        .section = "Grading Presets",
+        .on_draw = [] {
+          const char* labels[] = {"Vanilla", "Tech Test Look", "HDR Look", "Reset"};
+          for (int position = 0; position < 4; ++position) {
+            const int index = (position + 3) % 4;
+            const float width = ImGui::CalcTextSize(labels[index]).x + ImGui::GetStyle().FramePadding.x * 2.f;
+            if (position > 0) {
+              ImGui::SameLine();
+              if (ImGui::GetContentRegionAvail().x < width) {
+                ImGui::NewLine();
+              }
+            }
+            if (ImGui::Button(labels[index])) {
+              pending_grading_preset = index;
+            }
+          }
+          ImGui::Text("Active preset: %s", shader_injection.tech_test_look >= 1.f ? "Tech Test Look"
+              : (active_grading_preset == 3.f ? "Defaults" : labels[std::clamp(static_cast<int>(active_grading_preset), 0, 3)]));
+          return false;
         },
     },
     new renodx::utils::settings::Setting{
@@ -2552,25 +2602,91 @@ void OnPresent(reshade::api::command_queue* queue,
 
   shader_injection.latency_bar_draw_opacity = 1.f;
 
-  float current_tech_test = shader_injection.tech_test_look;
-  if (current_tech_test != prev_tech_test_look) {
-    if (current_tech_test >= 1.f) pending_tech_test_preset = 1;
-    prev_tech_test_look = current_tech_test;
+  if (pending_grading_preset == 3) {
+    renodx::utils::settings::UpdateSetting("GammaCorrection", shader_injection.tone_map_type == 0.f ? 0.f : 1.f);
+    renodx::utils::settings::UpdateSetting("SwapChainGammaCorrection", 1.f);
+  } else if (pending_grading_preset == 0) {
+    renodx::utils::settings::UpdateSetting("ToneMapType", 0.f);
+  } else if (pending_grading_preset == 2) {
+    renodx::utils::settings::UpdateSetting("ToneMapType", 2.f);
+  } else if (pending_grading_preset == 1 && shader_injection.tone_map_type == 0.f) {
+    renodx::utils::settings::UpdateSetting("ToneMapType", 2.f);
   }
 
-  if (pending_tech_test_preset == 1) {
+  if (shader_injection.tone_map_type != prev_tone_map_type || pending_grading_preset == 3) {
+    const bool switched_tone_mapper = prev_tone_map_type >= 0.f;
+    if (switched_tone_mapper && shader_injection.tone_map_type != prev_tone_map_type) {
+      tone_mapper_warning_until.store(GetTickCount64() + 10000u, std::memory_order_relaxed);
+    }
+    const bool psychov = shader_injection.tone_map_type >= 2.f;
+    for (auto* setting : settings) {
+      if (setting->key == "ToneMapHueShift") {
+        setting->default_value = (shader_injection.tone_map_type == 0.f ? 0.f : (psychov ? PSYCHOV_HUE_SHIFT : VANILLA_HUE_SHIFT));
+      } else if (setting->key == "ToneMapPerChannelBlowout") {
+        setting->default_value = (shader_injection.tone_map_type == 0.f ? 0.f : (psychov ? PSYCHOV_PER_CHANNEL_BLOWOUT : VANILLA_PER_CHANNEL_BLOWOUT));
+      } else {
+        continue;
+      }
+      // Initialize reset targets on startup without overwriting saved adjustments.
+      if (switched_tone_mapper || pending_grading_preset == 3) {
+        renodx::utils::settings::UpdateSetting(setting->key, setting->default_value);
+      }
+    }
+    if (switched_tone_mapper && shader_injection.tech_test_look >= 1.f && pending_grading_preset < 0) {
+      pending_grading_preset = 1;
+    }
+    prev_tone_map_type = shader_injection.tone_map_type;
+  }
+
+  if (pending_grading_preset >= 0) {
+    const bool hdr_improvements = pending_grading_preset == 1 || pending_grading_preset == 2
+                                  || (pending_grading_preset == 3 && shader_injection.tone_map_type > 0.f);
+    renodx::utils::settings::UpdateSetting("HDRSun", hdr_improvements ? 1.f : 0.f);
+    renodx::utils::settings::UpdateSetting("VFXBoost", hdr_improvements ? 1.f : 0.f);
+    SetVfxBoostTrackingEnabled(hdr_improvements);
+    renodx::utils::settings::UpdateSetting("TechTestLook", pending_grading_preset == 1 ? 1.f : 0.f);
+    renodx::utils::settings::UpdateSetting("GradingPreset", static_cast<float>(pending_grading_preset));
+    if (pending_grading_preset != 3) {
+      renodx::utils::settings::UpdateSetting("SwapChainEncoding", pending_grading_preset == 0 ? 1.f : 4.f);
+      ApplySwapChainEncodingTarget(pending_grading_preset == 0 ? 1.f : 4.f);
+    }
+    for (auto* setting : settings) {
+      if (setting->section == "Color Grading" && !setting->key.empty() && setting->HasNumericValue()) {
+        renodx::utils::settings::UpdateSetting(setting->key, setting->default_value);
+      }
+    }
+  }
+  if (pending_grading_preset == 0) {
+    renodx::utils::settings::UpdateSetting("GammaCorrection", 0.f);
+    renodx::utils::settings::UpdateSetting("SwapChainGammaCorrection", 0.f);
+    renodx::utils::settings::UpdateSetting("ToneMapHueShift", 0.f);
+    renodx::utils::settings::UpdateSetting("ToneMapPerChannelBlowout", 0.f);
+    renodx::utils::settings::UpdateSetting("BloomStrength", 50.f);
+  } else if (pending_grading_preset == 1) {
+    renodx::utils::settings::UpdateSetting("ToneMapHueShift", shader_injection.tone_map_type >= 2.f ? PSYCHOV_HUE_SHIFT : VANILLA_HUE_SHIFT);
+    renodx::utils::settings::UpdateSetting("ToneMapPerChannelBlowout", shader_injection.tone_map_type >= 2.f ? PSYCHOV_PER_CHANNEL_BLOWOUT : VANILLA_PER_CHANNEL_BLOWOUT);
     renodx::utils::settings::UpdateSetting("GammaCorrection", 2.f);
     renodx::utils::settings::UpdateSetting("SwapChainGammaCorrection", 2.f);
-    renodx::utils::settings::UpdateSetting("ToneMapPerChannelBlowout", 75.f);
+    renodx::utils::settings::UpdateSetting("LUTLightness", 50.f);
+    renodx::utils::settings::UpdateSetting("BloomStrength", 60.f);
     renodx::utils::settings::UpdateSetting("ColorGradeExposure", 0.75f);
-    renodx::utils::settings::UpdateSetting("ColorGradeHighlights", 50.f);
+    renodx::utils::settings::UpdateSetting("ColorGradeHighlights", shader_injection.tone_map_type >= 2.f ? 75.f : 50.f);
     renodx::utils::settings::UpdateSetting("ColorGradeShadows", 80.f);
     renodx::utils::settings::UpdateSetting("ColorGradeContrast", 55.f);
-    renodx::utils::settings::UpdateSetting("ColorGradeSaturation", 35.f);
+    renodx::utils::settings::UpdateSetting("ColorGradeSaturation", shader_injection.tone_map_type >= 2.f ? 45.f : 35.f);
     renodx::utils::settings::UpdateSetting("ColorGradeHighlightSaturation", 100.f);
     renodx::utils::settings::UpdateSetting("ColorGradeBlowout", 30.f);
-    pending_tech_test_preset = -1;
+  } else if (pending_grading_preset == 2) {
+    renodx::utils::settings::UpdateSetting("GammaCorrection", 1.f);
+    renodx::utils::settings::UpdateSetting("SwapChainGammaCorrection", 1.f);
+    renodx::utils::settings::UpdateSetting("ColorGradeHighlights", 60.f);
+    renodx::utils::settings::UpdateSetting("ColorGradeContrast", 60.f);
+    renodx::utils::settings::UpdateSetting("LUTLightness", 50.f);
+    renodx::utils::settings::UpdateSetting("ToneMapHueShift", PSYCHOV_HUE_SHIFT);
+    renodx::utils::settings::UpdateSetting("ToneMapPerChannelBlowout", PSYCHOV_PER_CHANNEL_BLOWOUT);
+    renodx::utils::settings::UpdateSetting("BloomStrength", 60.f);
   }
+  pending_grading_preset = -1;
 
   if (ui_toggle_hotkey != 0 && !hotkey_input_active) {
     bool key_down = (GetAsyncKeyState(ui_toggle_hotkey) & 0x8000) != 0;
