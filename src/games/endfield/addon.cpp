@@ -11,6 +11,7 @@
 #include <cstring>
 #include <cwchar>
 #include <deque>
+#include <filesystem>
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
@@ -2738,6 +2739,37 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
       if (!reshade::register_addon(h_module)) return FALSE;
 
       {
+        int prevent_unloading = 0;
+        reshade::get_config_value(nullptr, "INSTALL", "PreventUnloading", prevent_unloading);
+        if (prevent_unloading != 1) {
+          reshade::set_config_value(nullptr, "INSTALL", "PreventUnloading", 1);
+        }
+        size_t base_path_size = 0;
+        reshade::get_reshade_base_path(nullptr, &base_path_size);
+        std::vector<char> base_path(base_path_size + 1, '\0');
+        reshade::get_reshade_base_path(base_path.data(), &base_path_size);
+        if (base_path[0] == '\0') {
+          reshade::log::message(reshade::log::level::error, "Endfield: cannot locate ReShade.ini to save PreventUnloading.");
+        } else {
+          const auto config_path = std::filesystem::u8path(base_path.data()) / L"ReShade.ini";
+          if (GetPrivateProfileIntW(L"INSTALL", L"PreventUnloading", 0, config_path.c_str()) != 1) {
+            bool saved = WritePrivateProfileStringW(L"INSTALL", L"PreventUnloading", L"1", config_path.c_str()) != FALSE;
+            if (saved) {
+              WritePrivateProfileStringW(nullptr, nullptr, nullptr, config_path.c_str());
+              const auto file = CreateFileW(config_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+              saved = file != INVALID_HANDLE_VALUE;
+              if (saved) {
+                saved = FlushFileBuffers(file) != FALSE;
+                CloseHandle(file);
+              }
+              saved = saved && GetPrivateProfileIntW(L"INSTALL", L"PreventUnloading", 0, config_path.c_str()) == 1;
+            }
+            reshade::log::message(saved ? reshade::log::level::info : reshade::log::level::error,
+                                  saved ? "Endfield: saved PreventUnloading=1 to ReShade.ini before unload. Takes effect on the next game launch."
+                                        : "Endfield: failed to save and flush PreventUnloading=1 to ReShade.ini.");
+          }
+        }
         endfield::early_load::addon_module = h_module;
         reshade::get_config_value(nullptr, "renodx", "FrameGenSupport", endfield::frame_generation::enabled);
         endfield::frame_generation::requested_at_startup = endfield::frame_generation::enabled >= 0.5f;
