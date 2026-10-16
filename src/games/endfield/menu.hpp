@@ -107,15 +107,19 @@ static std::string ControlLabel(const std::string& label, float width) {
   return visible + "###" + label;
 }
 
-static void DrawFpsLabel(const std::string& label) {
-  const float control_x = ImGui::GetCursorPosX() + label_width + ImGui::GetStyle().ItemSpacing.x;
-  const auto display = ControlLabel(label, label_width);
+static float DrawFpsLabel(const std::string& label) {
+  const float button_width = std::max(ImGui::CalcTextSize("360").x, ImGui::CalcTextSize("Off").x) + ImGui::GetStyle().FramePadding.x * 2.f;
+  const float suggestions_width = (button_width + ImGui::GetStyle().ItemSpacing.x) * 4.f;
+  const float name_width = std::min(label_width, std::max(1.f, ImGui::GetContentRegionAvail().x - suggestions_width - ImGui::GetStyle().ItemSpacing.x) * 0.4f);
+  const float control_x = ImGui::GetCursorPosX() + name_width + ImGui::GetStyle().ItemSpacing.x;
+  const auto display = ControlLabel(label, name_width);
   ImGui::AlignTextToFramePadding();
   ImGui::TextUnformatted(display.c_str(), display.c_str() + display.find("###"));
   ImGui::SetItemTooltip("%s", label.c_str());
   ImGui::SameLine();
   ImGui::SetCursorPosX(control_x);
-  ImGui::SetNextItemWidth(-1.f);
+  ImGui::SetNextItemWidth(std::max(1.f, ImGui::GetContentRegionAvail().x - suggestions_width));
+  return button_width;
 }
 
 static bool DrawFpsLimit(const char* key, const std::array<int, 3>& suggestions) {
@@ -124,15 +128,11 @@ static bool DrawFpsLimit(const char* key, const std::array<int, 3>& suggestions)
   const int limit = (setting->GetValue() <= 0.f ? 0 : std::clamp(static_cast<int>(setting->GetValue()), 15, static_cast<int>(setting->max)));
   int position = (limit == 0 ? 0 : limit - 14);
   const auto display = (limit == 0 ? std::string("Off") : std::to_string(limit) + " FPS");
-  DrawFpsLabel(setting->label);
-  const float control_x = ImGui::GetCursorPosX();
-  const float button_width = std::max(1.f, std::min(
-      std::max(ImGui::CalcTextSize("360").x, ImGui::CalcTextSize("Off").x) + ImGui::GetStyle().FramePadding.x * 2.f,
-      (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x * 3.f) / 4.f));
+  const float button_width = DrawFpsLabel(setting->label);
   bool changed = ImGui::SliderInt("##limit", &position, 0, static_cast<int>(setting->max) - 14, display.c_str(), ImGuiSliderFlags_NoInput);
   ImGui::SetItemTooltip("%s", setting->tooltip.c_str());
   int selected = (position == 0 ? 0 : position + 14);
-  ImGui::SetCursorPosX(control_x);
+  ImGui::SameLine();
   if (ImGui::Button("Off", ImVec2(button_width, 0.f))) {
     selected = 0;
     changed = true;
