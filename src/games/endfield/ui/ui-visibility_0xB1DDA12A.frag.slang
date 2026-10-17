@@ -1,4 +1,4 @@
-#include "../shared.h"
+#include "./hud_visibility.hlsli"
 
 // Patch 1.5 Vulkan UI permutation observed and classified with DevKit.
 struct _24
@@ -165,6 +165,7 @@ static float4 _12 = (float4)0;
 
 struct SPIRV_Cross_Input
 {
+    float4 position : SV_Position;
     [[vk::location(0)]] float4 _3 : TEXCOORD0;
     [[vk::location(1)]] float2 _4 : TEXCOORD1;
     [[vk::location(2)]] float4 _5 : TEXCOORD2;
@@ -278,6 +279,8 @@ SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
     }
     // RenoDX code end
     SPIRV_Cross_Output stage_output;
+    // RenoDX: fade only the classified gameplay HUD region; preserve premultiplied blending.
+    _12 *= EndfieldHudOpacity(EndfieldHudPosition(stage_input.position.xy));
     stage_output._12 = _12;
     return stage_output;
 }

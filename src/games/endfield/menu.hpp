@@ -12,8 +12,8 @@
 #include <utility>
 #include <vector>
 
-#include "../../utils/settings.hpp"
 #include "../../utils/platform.hpp"
+#include "../../utils/settings.hpp"
 #include "./frame_generation.hpp"
 
 namespace endfield::menu {
@@ -153,6 +153,13 @@ static void Configure(renodx::utils::settings::Settings* settings) {
   controls.reserve(settings->size() * 2);
   for (auto* setting : *settings) {
     controls.push_back(setting);
+    // Keep the existing settings as storage; the grouped HUD editor owns their UI.
+    if ((setting->key.starts_with("Hud") && setting->key != "HudIndividualReveal")
+        || setting->key == "UIOpacityStatusText" || setting->key == "UIOpacityLatencyText"
+        || setting->key == "UIOpacityPingText") {
+      setting->is_visible = [] { return false; };
+      continue;
+    }
     if (setting->value_type == renodx::utils::settings::SettingValueType::CUSTOM
         && (setting->section == "FPS Limit" || setting->label == "UI Toggle Hotkey")) {
       aligned_controls.push_back(setting);
@@ -179,7 +186,21 @@ static void Configure(renodx::utils::settings::Settings* settings) {
       }
       const auto control_label = (fps_control ? std::string("##value") : ControlLabel(setting->label, label_width));
       bool changed = false;
-      if (setting->value_type == SettingValueType::FLOAT) {
+      if (setting->key.starts_with("Hud") && !setting->labels.empty()) {
+        if (ImGui::BeginCombo(control_label.c_str(), setting->labels[std::clamp(setting->value_as_int, 0, static_cast<int>(setting->labels.size()) - 1)].c_str())) {
+          for (int index = 0; index < static_cast<int>(setting->labels.size()); ++index) {
+            if (ImGui::Selectable(setting->labels[index].c_str(), setting->value_as_int == index)) {
+              setting->value_as_int = index;
+              changed = true;
+            }
+          }
+          ImGui::EndCombo();
+        }
+      } else if (setting->key.starts_with("Hud") && setting->value_type == SettingValueType::BOOLEAN) {
+        bool enabled = setting->value_as_int != 0;
+        changed = ImGui::Checkbox(control_label.c_str(), &enabled);
+        setting->value_as_int = enabled ? 1 : 0;
+      } else if (setting->value_type == SettingValueType::FLOAT) {
         changed = ImGui::SliderFloat(control_label.c_str(), &setting->value, setting->min, setting->max, setting->format.c_str(),
                                      setting->is_logarithmic ? ImGuiSliderFlags_Logarithmic : ImGuiSliderFlags_None);
       } else {
@@ -222,19 +243,153 @@ static void Configure(renodx::utils::settings::Settings* settings) {
     controls.push_back(control);
     aligned_controls.push_back(control);
   }
+  controls.push_back(new renodx::utils::settings::Setting{
+      .key = "HudVisibilityEditor",
+      .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
+      .can_reset = false,
+      .label = "HUD hiding and reveal",
+      .section = "HUD: Hide UI",
+      .tooltip = "Quest Log Minimap Map Buttons Menu Buttons Utility Wheel Dialogue Log Hide UI Auto Skip auto-hide delay hover notification",
+      .on_draw = [] {
+        bool changed = false;
+        const auto checkbox = [&changed](const std::string& key, const char* label) {
+          auto* setting = renodx::utils::settings::FindSetting(key);
+          if (setting == nullptr) return;
+          bool enabled = setting->GetValue() >= 0.5f;
+          if (ImGui::Checkbox(label, &enabled)) {
+            const std::unique_lock lock(renodx::utils::mutex::global_mutex);
+            setting->Set(enabled ? 1.f : 0.f)->Write();
+            changed = true;
+          }
+          if (!setting->tooltip.empty()) ImGui::SetItemTooltip("%s", setting->tooltip.c_str());
+        };
+        constexpr const char* groups[][2] = {
+            {"Quest Log", "HudQuest"},
+            {"Minimap", "HudMinimap"},
+            {"Map Buttons", "HudMapButtons"},
+            {"Menu Buttons", "HudMenuButtons"},
+            {"Utility Wheel Button", "HudUtility"},
+            {"Dialogue / Story Controls", "HudDialogue"},
+            {"Connection / Account", "HudStatus"},
+        };
+        constexpr const char* dialogue_labels[] = {"Log", "Hide UI", "Auto", "Skip"};
+        constexpr const char* status_labels[] = {"UID Text", "Latency Text", "Latency Bar"};
+        constexpr const char* status_keys[] = {"UIOpacityStatusText", "UIOpacityLatencyText", "UIOpacityPingText"};
+        constexpr const char* modes[] = {"Visible", "Hidden", "Auto-hide"};
+        static int selected_group = 0;
+        static int selected_element = 0;
+        static char filter[128] = {};
+        ImGui::PushID("HudVisibilityEditor");
+        ImGui::TextWrapped("Choose a HUD group, then select the rule to configure.");
+        ImGui::SetNextItemWidth(-1.f);
+        if (ImGui::BeginCombo("##HudGroup", groups[selected_group][0])) {
+          for (int index = 0; index < static_cast<int>(std::size(groups)); ++index) {
+            if (ImGui::Selectable(groups[index][0], selected_group == index)) {
+              selected_group = index;
+              selected_element = 0;
+              filter[0] = '\0';
+            }
+          }
+          ImGui::EndCombo();
+        }
+        ImGui::SetNextItemWidth(-1.f);
+        ImGui::InputTextWithHint("##HudFilter", "Filter elements", filter, sizeof(filter));
+        const bool dialogue = selected_group == 5;
+        const bool status = selected_group == 6;
+        const std::string prefix = groups[selected_group][1];
+        auto* mode = renodx::utils::settings::FindSetting(prefix + "Mode");
+        if (ImGui::BeginTable("HudElements", 2,
+                              ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY,
+                              ImVec2(0.f, ImGui::GetTextLineHeightWithSpacing() * 6.f))) {
+          ImGui::TableSetupColumn("Element", ImGuiTableColumnFlags_WidthStretch);
+          ImGui::TableSetupColumn("Rule", ImGuiTableColumnFlags_WidthFixed, ImGui::GetFontSize() * 9.f);
+          ImGui::TableHeadersRow();
+          for (int index = 0; index < (dialogue ? 4 : (status ? 3 : 1)); ++index) {
+            const char* label = (dialogue ? dialogue_labels[index] : (status ? status_labels[index] : "Group defaults"));
+            if (filter[0] != '\0' && std::search(label, label + std::strlen(label), filter, filter + std::strlen(filter), [](unsigned char first, unsigned char second) { return std::tolower(first) == std::tolower(second); }) == label + std::strlen(label)) continue;
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            if (ImGui::Selectable(label, selected_element == index, ImGuiSelectableFlags_SpanAllColumns)) selected_element = index;
+            ImGui::TableNextColumn();
+            if (dialogue) {
+              auto* hidden = renodx::utils::settings::FindSetting("HudDialogueHide" + std::to_string(index));
+              ImGui::TextUnformatted(hidden != nullptr && hidden->GetValue() >= 0.5f ? "Hidden" : "Visible");
+            } else if (status) {
+              auto* visibility = renodx::utils::settings::FindSetting(status_keys[index]);
+              ImGui::TextUnformatted(visibility != nullptr && visibility->GetValue() >= 0.5f ? "Visible" : "Hidden");
+            } else if (mode != nullptr) {
+              ImGui::TextUnformatted(modes[std::clamp(static_cast<int>(mode->GetValue()), 0, 2)]);
+            }
+          }
+          ImGui::EndTable();
+        }
+        ImGui::SeparatorText(dialogue ? dialogue_labels[selected_element] : (status ? status_labels[selected_element] : "Group defaults"));
+        ImGui::PushID(prefix.c_str());
+        if (dialogue) {
+          checkbox("HudDialogueHide" + std::to_string(selected_element), "Hide this element");
+          checkbox("HudDialogueHover" + std::to_string(selected_element), "Reappear on hover");
+          ImGui::TextDisabled("Subtitles and dialogue choices remain visible.");
+        } else if (status) {
+          if (auto* visibility = renodx::utils::settings::FindSetting(status_keys[selected_element])) {
+            constexpr const char* labels[] = {"Hidden", "Visible"};
+            int selected = std::clamp(static_cast<int>(visibility->GetValue()), 0, 1);
+            ImGui::SetNextItemWidth(std::max(120.f, ImGui::GetContentRegionAvail().x * 0.55f));
+            if (ImGui::Combo("Visibility", &selected, labels, 2)) {
+              const std::unique_lock lock(renodx::utils::mutex::global_mutex);
+              visibility->Set(static_cast<float>(selected))->Write();
+              changed = true;
+            }
+          }
+        } else if (mode != nullptr) {
+          ImGui::SetNextItemWidth(std::max(120.f, ImGui::GetContentRegionAvail().x * 0.55f));
+          int selected_mode = std::clamp(static_cast<int>(mode->GetValue()), 0, 2);
+          if (ImGui::Combo("Visibility", &selected_mode, modes, static_cast<int>(std::size(modes)))) {
+            const std::unique_lock lock(renodx::utils::mutex::global_mutex);
+            mode->Set(static_cast<float>(selected_mode))->Write();
+            changed = true;
+          }
+          if (selected_mode == 2) {
+            if (auto* delay = renodx::utils::settings::FindSetting(prefix + "Delay")) {
+              ImGui::SetNextItemWidth(std::max(120.f, ImGui::GetContentRegionAvail().x * 0.55f));
+              float seconds = delay->GetValue();
+              if (ImGui::SliderFloat("Auto-hide delay", &seconds, delay->min, delay->max, "%.0f seconds", ImGuiSliderFlags_AlwaysClamp)) {
+                const std::unique_lock lock(renodx::utils::mutex::global_mutex);
+                delay->Set(seconds)->Write();
+                changed = true;
+              }
+            }
+          }
+          if (selected_mode != 0) {
+            checkbox(prefix + "Hover", "Reappear on hover");
+            checkbox(prefix + "Notification", "Reveal while a notification is pending");
+          }
+        }
+        ImGui::PopID();
+        ImGui::PopID();
+        return changed;
+      },
+  });
   *settings = std::move(controls);
   for (auto* setting : *settings) {
     int setting_page = 1;
-    if (setting->section == "Effects" || setting->section == "Rendering Improvements") setting_page = 2;
-    else if (setting->section == "User Interface & Video") setting_page = 3;
-    else if (setting->section == "Display Output") setting_page = 4;
-    else if (setting->section == "FPS Limit") setting_page = 5;
-    else if (setting->section == "About" || setting->section == "Links") setting_page = 0;
+    if (setting->section == "Effects" || setting->section == "Rendering Improvements")
+      setting_page = 2;
+    else if (setting->section == "User Interface & Video" || setting->section.starts_with("HUD:"))
+      setting_page = 3;
+    else if (setting->section == "Display Output")
+      setting_page = 4;
+    else if (setting->section == "FPS Limit")
+      setting_page = 5;
+    else if (setting->section == "About" || setting->section == "Links")
+      setting_page = 0;
     if (!setting->tint.has_value() && setting->key != "SettingsMode") {
       setting->tint = PAGE_COLORS[setting_page];
-      if (setting->section == "Rendering Improvements") setting->tint = 0x57B881;
-      else if (setting->section == "Color Grading") setting->tint = 0x2A9D8F;
-      else if (setting->section == "Grading Presets") setting->tint = 0xF4A261;
+      if (setting->section == "Rendering Improvements")
+        setting->tint = 0x57B881;
+      else if (setting->section == "Color Grading")
+        setting->tint = 0x2A9D8F;
+      else if (setting->section == "Grading Presets")
+        setting->tint = 0xF4A261;
     }
     setting->is_visible = [setting, setting_page, visible = std::move(setting->is_visible)] {
       if (visible && !visible()) return false;
@@ -243,7 +398,8 @@ static void Configure(renodx::utils::settings::Settings* settings) {
       if (search[0] == '\0') return page == setting_page;
       const auto text = setting->label + " " + setting->section + " " + setting->tooltip + " " + setting->key;
       return std::search(text.begin(), text.end(), search, search + std::strlen(search),
-                         [](unsigned char first, unsigned char second) { return std::tolower(first) == std::tolower(second); }) != text.end();
+                         [](unsigned char first, unsigned char second) { return std::tolower(first) == std::tolower(second); })
+             != text.end();
     };
   }
 }
@@ -299,7 +455,7 @@ static void Draw(reshade::api::effect_runtime* runtime) {
       "Runtime information, credits and useful links.",
       "Tone mapping, HDR brightness and color grading.",
       "Rendering improvements and visual effects.",
-      "HUD visibility, keyboard shortcut and video brightness.",
+      "HUD hiding and reveal, general UI visibility, keyboard shortcut and video brightness.",
       "Output encoding, color space and HDR frame generation.",
       "FPS Unlock and Limiter",
   };

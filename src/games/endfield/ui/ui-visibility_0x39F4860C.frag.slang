@@ -1,4 +1,4 @@
-#include "../shared.h"
+#include "./hud_visibility.hlsli"
 
 // Patch 1.5 Vulkan UI permutation observed and classified with DevKit.
 [[vk::binding(0, 3)]]
@@ -254,6 +254,8 @@ SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
     }
     // RenoDX code end
     SPIRV_Cross_Output stage_output;
+    // RenoDX: include button labels in the same draw-scoped HUD controls.
+    _9 *= EndfieldHudOpacity(EndfieldHudPosition(stage_input.position.xy));
     stage_output._9 = _9;
     return stage_output;
 }

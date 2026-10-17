@@ -1,4 +1,4 @@
-#include "../shared.h"
+#include "./hud_visibility.hlsli"
 
 struct _9
 {
@@ -36,6 +36,7 @@ static float4 _5 = (float4)0;
 
 struct SPIRV_Cross_Input
 {
+    float4 position : SV_Position;
     [[vk::location(0)]] float4 _2 : TEXCOORD0;
     [[vk::location(1)]] float2 _3 : TEXCOORD1;
     [[vk::location(3)]] float4 _4 : TEXCOORD3;
@@ -64,6 +65,8 @@ SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
     }
     // RenoDX code end
     SPIRV_Cross_Output stage_output;
+    // RenoDX: fade only the classified gameplay HUD region; preserve premultiplied blending.
+    _5 *= EndfieldHudOpacity(stage_input.position.xy);
     stage_output._5 = _5;
     return stage_output;
 }

@@ -8,12 +8,14 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <cwchar>
 #include <deque>
 #include <filesystem>
 #include <mutex>
 #include <shared_mutex>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -35,9 +37,13 @@
 #include "../../utils/settings.hpp"
 #include "../../utils/state.hpp"
 #include "../../utils/swapchain.hpp"
-#include "./shared.h"
-#include "./renderer_guard.hpp"
 #include "./frame_generation.hpp"
+#include "./renderer_guard.hpp"
+#include "./shared.h"
+#include "./ui/hud_regions.h"
+#include "./ui/hud_notifications.hpp"
+#include "./ui/hud_texture_bindings.hpp"
+#include "./ui/hud_timer.hpp"
 
 namespace {
 
@@ -94,7 +100,7 @@ bool IsEndfieldProcess() {
   return _wcsicmp(
              process_name == nullptr ? process_path : process_name + 1,
              L"Endfield.exe")
-      == 0;
+         == 0;
 }
 
 uint64_t GetCommandListKey(const reshade::api::command_list* cmd_list) {
@@ -136,7 +142,7 @@ void OnPushVfxDescriptors(
       || update.descriptors == nullptr
       || (update.type != reshade::api::descriptor_type::texture_shader_resource_view
           && update.type
-              != reshade::api::descriptor_type::sampler_with_resource_view)) {
+                 != reshade::api::descriptor_type::sampler_with_resource_view)) {
     return;
   }
 
@@ -145,11 +151,11 @@ void OnPushVfxDescriptors(
   vulkan_graphics_descriptor_set_1.erase(command_buffer);
   auto& images = vulkan_graphics_push_images_set_1[command_buffer];
   const uint64_t image_view = update.type
-          == reshade::api::descriptor_type::texture_shader_resource_view
-      ? static_cast<const reshade::api::resource_view*>(update.descriptors)[0].handle
-      : static_cast<const reshade::api::sampler_with_resource_view*>(
-            update.descriptors)[0]
-            .view.handle;
+                                      == reshade::api::descriptor_type::texture_shader_resource_view
+                                  ? static_cast<const reshade::api::resource_view*>(update.descriptors)[0].handle
+                                  : static_cast<const reshade::api::sampler_with_resource_view*>(
+                                        update.descriptors)[0]
+                                        .view.handle;
   images[GetTrackedVfxTextureBindingIndex(update.binding)] = image_view;
   if (image_view == 0u
       && std::ranges::all_of(images, [](uint64_t view) { return view == 0u; })) {
@@ -180,11 +186,11 @@ bool OnUpdateVfxDescriptorTables(
 
     if (!lock.owns_lock()) lock.lock();
     const uint64_t image_view = update.type
-            == reshade::api::descriptor_type::texture_shader_resource_view
-        ? static_cast<const reshade::api::resource_view*>(update.descriptors)[0].handle
-        : static_cast<const reshade::api::sampler_with_resource_view*>(
-              update.descriptors)[0]
-              .view.handle;
+                                        == reshade::api::descriptor_type::texture_shader_resource_view
+                                    ? static_cast<const reshade::api::resource_view*>(update.descriptors)[0].handle
+                                    : static_cast<const reshade::api::sampler_with_resource_view*>(
+                                          update.descriptors)[0]
+                                          .view.handle;
     UpdateTrackedVfxTextureView(
         &vulkan_descriptor_images,
         update.table.handle,
@@ -258,22 +264,66 @@ void InitializeCustomShaders() {
   // Activate only known HDR post-process outputs. Other RGBA8 resources,
   // including persistent snow data, remain on their original images.
   constexpr uint32_t post_process_shaders[] = {
-      0x071C2528u, 0x580F67D0u, 0x046ABF0Eu, 0xFADF3643u,
-      0x554DED63u, 0x8122C29Cu, 0x5CCD4219u, 0xF478CFB0u,
-      0x7AA78428u, 0xA5A4DFC6u, 0xD7D74BB1u, 0xE5DCBD02u,
-      0x3CCA98C7u, 0xDD13270Fu, 0x7198D951u, 0x9F531831u,
-      0x5A9D713Cu, 0x25384F38u, 0x7308D06Cu, 0x8296537Bu,
-      0xEE28F633u, 0x24BC5D5Du, 0xA71B71C5u, 0x3D4DA753u,
-      0x45099205u, 0x249C6796u, 0x8D3E49CCu, 0x0FDE5322u,
-      0x05B6EFDAu, 0xF89C0AB1u, 0xE43773D6u, 0x62ECFD08u,
+      0x071C2528u,
+      0x580F67D0u,
+      0x046ABF0Eu,
+      0xFADF3643u,
+      0x554DED63u,
+      0x8122C29Cu,
+      0x5CCD4219u,
+      0xF478CFB0u,
+      0x7AA78428u,
+      0xA5A4DFC6u,
+      0xD7D74BB1u,
+      0xE5DCBD02u,
+      0x3CCA98C7u,
+      0xDD13270Fu,
+      0x7198D951u,
+      0x9F531831u,
+      0x5A9D713Cu,
+      0x25384F38u,
+      0x7308D06Cu,
+      0x8296537Bu,
+      0xEE28F633u,
+      0x24BC5D5Du,
+      0xA71B71C5u,
+      0x3D4DA753u,
+      0x45099205u,
+      0x249C6796u,
+      0x8D3E49CCu,
+      0x0FDE5322u,
+      0x05B6EFDAu,
+      0xF89C0AB1u,
+      0xE43773D6u,
+      0x62ECFD08u,
       0xEF55D954u,
   };
   for (const auto crc : post_process_shaders) {
     custom_shaders.at(crc).on_draw = UpgradePostProcessTarget;
   }
+  // This native copy feeds the offscreen HUD target at non-native resolutions.
+  // Propagate HDR only from an already upgraded source, not arbitrary blits.
+  custom_shaders.emplace(0x105B9793u, renodx::mods::shader::CustomShader{
+      .crc32 = 0x105B9793u,
+      .on_draw = [](reshade::api::command_list* cmd_list) {
+        const auto source = endfield::hud::GetBoundTexture(cmd_list, 2u);
+        if (source.handle == 0u) return true;
+        bool hdr_source = false;
+        renodx::utils::resource::GetResourceInfo(
+            cmd_list->get_device()->get_resource_from_view(source),
+            [&hdr_source](const renodx::utils::resource::ResourceInfo& info) {
+              hdr_source = info.upgraded || info.clone_enabled;
+            });
+        if (hdr_source) return UpgradePostProcessTarget(cmd_list);
+        return true;
+      },
+  });
+
 #undef CustomShaderEntry
-#define CustomShaderEntry(crc32) \
-  {crc32, renodx::mods::shader::CreateCustomShader(crc32, __##crc32)}
+#define CustomShaderEntry(crc32)                                      \
+  {                                                                   \
+    crc32, renodx::mods::shader::CreateCustomShader(crc32, __##crc32) \
+  }
 }
 
 ShaderInjectData shader_injection;
@@ -554,10 +604,50 @@ struct UiDrawDetectionState {
   bool is_uid_input_candidate = false;
   bool is_latency_bar_draw_candidate = false;
   uint32_t draw_call_vertex_count = 0;
+  uint64_t hud_target = 0;
 };
 
 std::mutex ui_draw_detection_mutex;
 std::unordered_map<uint64_t, UiDrawDetectionState> ui_draw_detection_states;
+
+struct HudControl {
+  const char* key;
+  const char* label;
+  float mode = 0.f;
+  float delay = 15.f;
+  float reveal_hover = 1.f;
+  endfield::hud::Timer timer;
+};
+
+std::array hud_controls = {
+    HudControl{.key = "HudQuest", .label = "Quest Log"},
+    HudControl{.key = "HudMinimap", .label = "Minimap"},
+    HudControl{.key = "HudMapButtons", .label = "Map Buttons"},
+    HudControl{.key = "HudMenuButtons", .label = "Menu Buttons"},
+    HudControl{.key = "HudUtility", .label = "Utility Wheel Button"},
+};
+int hud_hovered = -1;
+int hud_button_hovered = -1;
+std::array<double, ENDFIELD_HUD_BUTTON_COUNT> hud_button_deadlines = {};
+uint32_t hud_revealed_buttons = 0u;
+float hud_render_aspect = 16.f / 9.f;
+int dialogue_button_hovered = -1;
+float hud_individual_reveal = 1.f;
+std::array<float, 2> hud_reveal_notification = {};
+std::array<float, 4> dialogue_control_hidden = {};
+std::array<float, 4> dialogue_reveal_hover = {1.f, 1.f, 1.f, 1.f};
+bool hud_input_allowed = false;
+constexpr std::array<uint32_t, 9> HUD_PIXEL_SHADERS = {
+    0xF4A6C85Fu,
+    0x69A9ACA9u,
+    0xDED9BC60u,
+    0x6F894992u,
+    0xB1DDA12Au,
+    0x0BADCCF7u,
+    0xAEC2747Bu,
+    0x5756A062u,
+    0x39F4860Cu,
+};
 
 struct VfxBoostMatch {
   uint32_t shader_crc;
@@ -633,11 +723,11 @@ void ClearUiDrawDetectionState(reshade::api::command_list* cmd_list) {
 
 bool IsVfxTextureDesc(const reshade::api::resource_desc& desc) {
   return desc.type == reshade::api::resource_type::texture_2d
-      && (desc.texture.format == reshade::api::format::bc7_unorm
-          || desc.texture.format == reshade::api::format::bc7_unorm_srgb)
-      && desc.texture.width == 256u
-      && desc.texture.height == 256u
-      && desc.texture.depth_or_layers == 1u;
+         && (desc.texture.format == reshade::api::format::bc7_unorm
+             || desc.texture.format == reshade::api::format::bc7_unorm_srgb)
+         && desc.texture.width == 256u
+         && desc.texture.height == 256u
+         && desc.texture.depth_or_layers == 1u;
 }
 
 bool ComputeVfxTextureCrc(
@@ -651,12 +741,12 @@ bool ComputeVfxTextureCrc(
   const uint32_t target_slice_pitch = reshade::api::format_slice_pitch(
       desc.texture.format, target_row_pitch, desc.texture.height);
   const uint32_t source_row_pitch = data.row_pitch != 0u
-      ? data.row_pitch
-      : target_row_pitch;
+                                        ? data.row_pitch
+                                        : target_row_pitch;
   const uint32_t source_slice_pitch = data.slice_pitch != 0u
-      ? data.slice_pitch
-      : reshade::api::format_slice_pitch(
-            desc.texture.format, source_row_pitch, desc.texture.height);
+                                          ? data.slice_pitch
+                                          : reshade::api::format_slice_pitch(
+                                                desc.texture.format, source_row_pitch, desc.texture.height);
   if (target_row_pitch == 0u
       || target_slice_pitch == 0u
       || source_row_pitch < target_row_pitch
@@ -1081,40 +1171,133 @@ void OnDestroyVfxDevice(reshade::api::device* device) {
 // Endfield 1.6 UI permutations. The shared UID/ping pass is handled
 // separately so its controls remain independent of general UI visibility.
 constexpr std::array<uint32_t, 125> kVulkanUiVisibilityPixelShaderHashes = {
-    0x0CF25D6Fu, 0xAEC2747Bu, 0x0BADCCF7u, 0x6F894992u,
-    0xB1DDA12Au, 0x0579B072u, 0x05B163CBu, 0x09B4A4E4u,
-    0x0FC51ACBu, 0x124253CBu, 0x174DB8DBu, 0x1E0803CFu,
-    0x240BB14Au, 0x26174B82u, 0x2E7E1CADu, 0x2EB2CB10u,
-    0x2F405F9Cu, 0x30C35A72u, 0x393EF1BFu, 0x3B225B5Au,
-    0x3C63C3C6u, 0x3CB56109u, 0x41EBB37Bu, 0x478BEB6Bu,
-    0x4ADD7166u, 0x50191995u, 0x5106276Au, 0x58DFBA22u,
-    0x5A1FB570u, 0x5BC3D18Cu, 0x5CA3B153u, 0x61153163u,
-    0x6392B8E5u, 0x6452D0B4u, 0x64C31822u, 0x69A9ACA9u,
-    0x6BFF49C0u, 0x6D095BA3u, 0x6DF4D552u, 0x6E15A96Bu,
-    0x6E213C0Du, 0x71877F10u, 0x74445A13u, 0x7932FFE3u,
-    0x7FEBE304u, 0x87761514u, 0x87978459u, 0x8A774BC0u,
-    0x909EE636u, 0x90D34513u, 0x97090220u, 0x9CE4BF71u,
-    0x9DE2F2CFu, 0xA145192Du, 0xA6D7F6F5u, 0xA6DC2512u,
-    0xA6F27FBBu, 0xAA0F7751u, 0xAEBFE572u, 0xB7696AF6u,
-    0xBC8570BEu, 0xCBBB8AA1u, 0xCBCF3570u, 0xCDC7598Cu,
-    0xD054944Fu, 0xD182C181u, 0xD1ECDC21u, 0xD56051DAu,
-    0xD87E5BB0u, 0xD8979521u, 0xD9016280u, 0xDED9BC60u,
-    0xE3672F63u, 0xE69A5D45u, 0xEE796902u, 0xEEEF81F2u,
-    0xF3D15245u, 0xF4A6C85Fu, 0xF528CF9Fu, 0xFB2A9B01u,
-    0xFB5815F4u, 0x09E9FD55u, 0xDCE1A4E9u,
+    0x0CF25D6Fu,
+    0xAEC2747Bu,
+    0x0BADCCF7u,
+    0x6F894992u,
+    0xB1DDA12Au,
+    0x0579B072u,
+    0x05B163CBu,
+    0x09B4A4E4u,
+    0x0FC51ACBu,
+    0x124253CBu,
+    0x174DB8DBu,
+    0x1E0803CFu,
+    0x240BB14Au,
+    0x26174B82u,
+    0x2E7E1CADu,
+    0x2EB2CB10u,
+    0x2F405F9Cu,
+    0x30C35A72u,
+    0x393EF1BFu,
+    0x3B225B5Au,
+    0x3C63C3C6u,
+    0x3CB56109u,
+    0x41EBB37Bu,
+    0x478BEB6Bu,
+    0x4ADD7166u,
+    0x50191995u,
+    0x5106276Au,
+    0x58DFBA22u,
+    0x5A1FB570u,
+    0x5BC3D18Cu,
+    0x5CA3B153u,
+    0x61153163u,
+    0x6392B8E5u,
+    0x6452D0B4u,
+    0x64C31822u,
+    0x69A9ACA9u,
+    0x6BFF49C0u,
+    0x6D095BA3u,
+    0x6DF4D552u,
+    0x6E15A96Bu,
+    0x6E213C0Du,
+    0x71877F10u,
+    0x74445A13u,
+    0x7932FFE3u,
+    0x7FEBE304u,
+    0x87761514u,
+    0x87978459u,
+    0x8A774BC0u,
+    0x909EE636u,
+    0x90D34513u,
+    0x97090220u,
+    0x9CE4BF71u,
+    0x9DE2F2CFu,
+    0xA145192Du,
+    0xA6D7F6F5u,
+    0xA6DC2512u,
+    0xA6F27FBBu,
+    0xAA0F7751u,
+    0xAEBFE572u,
+    0xB7696AF6u,
+    0xBC8570BEu,
+    0xCBBB8AA1u,
+    0xCBCF3570u,
+    0xCDC7598Cu,
+    0xD054944Fu,
+    0xD182C181u,
+    0xD1ECDC21u,
+    0xD56051DAu,
+    0xD87E5BB0u,
+    0xD8979521u,
+    0xD9016280u,
+    0xDED9BC60u,
+    0xE3672F63u,
+    0xE69A5D45u,
+    0xEE796902u,
+    0xEEEF81F2u,
+    0xF3D15245u,
+    0xF4A6C85Fu,
+    0xF528CF9Fu,
+    0xFB2A9B01u,
+    0xFB5815F4u,
+    0x09E9FD55u,
+    0xDCE1A4E9u,
     // Native UI effects without the clipped per-draw struct in the pixel stage.
     // Includes the live 0x7AE4A0D3 / 0x5756A062 UI-effect pipeline.
-    0x0553711Bu, 0x0AB1F2BAu, 0x0FEEEA1Cu, 0x12356458u,
-    0x151A1926u, 0x198F1971u, 0x1CC7A16Fu, 0x33FBB93Eu,
-    0x35846E1Bu, 0x3D36F169u, 0x419A525Eu, 0x43B04F4Bu,
-    0x47538FCFu, 0x4B0BCF8Bu, 0x511CEAA7u, 0x54D18FFCu,
-    0x5756A062u, 0x59A128D0u, 0x5E2ABBE4u, 0x6A6522B0u,
-    0x6CD649F6u, 0x7376AF6Fu, 0x7BBDF363u, 0x80DA17F7u,
-    0x817F40C0u, 0x89A55EC1u, 0x8BD537C1u, 0x8F8A6E12u,
-    0x8FEEACFFu, 0x977D6EA0u, 0x990B3A67u, 0xA27F9628u,
-    0xA6D06504u, 0xADE95EDFu, 0xBE00E127u, 0xC160C011u,
-    0xC67E53EFu, 0xC7AC6F81u, 0xED3C4B8Eu, 0xF16E213Cu,
-    0xFA5B9A36u, 0xFFFF5869u,
+    0x0553711Bu,
+    0x0AB1F2BAu,
+    0x0FEEEA1Cu,
+    0x12356458u,
+    0x151A1926u,
+    0x198F1971u,
+    0x1CC7A16Fu,
+    0x33FBB93Eu,
+    0x35846E1Bu,
+    0x3D36F169u,
+    0x419A525Eu,
+    0x43B04F4Bu,
+    0x47538FCFu,
+    0x4B0BCF8Bu,
+    0x511CEAA7u,
+    0x54D18FFCu,
+    0x5756A062u,
+    0x59A128D0u,
+    0x5E2ABBE4u,
+    0x6A6522B0u,
+    0x6CD649F6u,
+    0x7376AF6Fu,
+    0x7BBDF363u,
+    0x80DA17F7u,
+    0x817F40C0u,
+    0x89A55EC1u,
+    0x8BD537C1u,
+    0x8F8A6E12u,
+    0x8FEEACFFu,
+    0x977D6EA0u,
+    0x990B3A67u,
+    0xA27F9628u,
+    0xA6D06504u,
+    0xADE95EDFu,
+    0xBE00E127u,
+    0xC160C011u,
+    0xC67E53EFu,
+    0xC7AC6F81u,
+    0xED3C4B8Eu,
+    0xF16E213Cu,
+    0xFA5B9A36u,
+    0xFFFF5869u,
 };
 constexpr uint32_t kVulkanUidPixelShaderHash = 0xFF43F702u;
 constexpr uint32_t kVulkanSharedUidPingPixelShaderHash = 0x39F4860Cu;
@@ -1133,7 +1316,8 @@ constexpr VulkanPingShaderPair kVulkanSharedUidPingShaderPair = {
 };
 // Live 1.6 sprite draw immediately preceding the shared UID/latency text pass.
 constexpr VulkanPingShaderPair kVulkanLatencyBarShaderPair = {
-    0xB698614Du, 0xDED9BC60u,
+    0xB698614Du,
+    0xDED9BC60u,
 };
 constexpr std::array kVulkanPingShaderPairs = {
     kVulkanSharedUidPingShaderPair,
@@ -1168,18 +1352,18 @@ bool DrawTextRegion(
       render_rect.left
           + static_cast<int32_t>(height * kTextSplitFromHeight + 0.5f));
   const reshade::api::rect clip_rect = keep_latency_text
-      ? reshade::api::rect{
-            .left = render_rect.left,
-            .top = render_rect.top,
-            .right = split_x,
-            .bottom = render_rect.bottom,
-        }
-      : reshade::api::rect{
-            .left = split_x,
-            .top = render_rect.top,
-            .right = render_rect.right,
-            .bottom = render_rect.bottom,
-        };
+                                           ? reshade::api::rect{
+                                                 .left = render_rect.left,
+                                                 .top = render_rect.top,
+                                                 .right = split_x,
+                                                 .bottom = render_rect.bottom,
+                                             }
+                                           : reshade::api::rect{
+                                                 .left = split_x,
+                                                 .top = render_rect.top,
+                                                 .right = render_rect.right,
+                                                 .bottom = render_rect.bottom,
+                                             };
 
   cmd_list->bind_scissor_rects(0u, 1u, &clip_rect);
   cmd_list->draw_indexed(
@@ -1212,14 +1396,106 @@ bool OnUIDDraw(reshade::api::command_list* cmd_list) {
     const std::lock_guard lock(ui_draw_detection_mutex);
     const auto state = ui_draw_detection_states.find(GetCommandListKey(cmd_list));
     is_uid_input_candidate = state != ui_draw_detection_states.end()
-        && state->second.is_uid_input_candidate;
+                             && state->second.is_uid_input_candidate;
   }
   if (is_uid_input_candidate) {
-    if (!IsVisible(shader_injection.status_text_opacity) &&
-        !IsVisible(shader_injection.latency_text_opacity)) {
+    if (!IsVisible(shader_injection.status_text_opacity) && !IsVisible(shader_injection.latency_text_opacity)) {
       return false;
     }
   }
+  return true;
+}
+
+void ObserveHudDraw(reshade::api::command_list* cmd_list) {
+  const auto hash = renodx::utils::state::GetCurrentShaderHash(cmd_list, reshade::api::pipeline_stage::pixel_shader);
+  const auto vertex_hash = renodx::utils::state::GetCurrentShaderHash(cmd_list, reshade::api::pipeline_stage::vertex_shader);
+  const auto target = renodx::utils::state::GetRenderTarget(cmd_list, 0u);
+  uint8_t texture_flags = 0u;
+  if ((hash == 0xF4A6C85Fu && vertex_hash == 0x86CC3D8Cu) || hash == 0xDED9BC60u) {
+    auto* device = cmd_list->get_device();
+    const auto view = endfield::hud::GetBoundTexture(cmd_list, 1u);
+    if (view.handle != 0u) {
+      texture_flags = endfield::hud::ClassifyHudTexture(device->get_resource_desc(device->get_resource_from_view(view)));
+    }
+  }
+  const bool minimap = hash == 0xF4A6C85Fu && vertex_hash == 0x86CC3D8Cu
+      && (texture_flags & endfield::hud::MINIMAP_TEXTURE) != 0u;
+  // Unknown/loading textures end the HUD batch; never inherit region masks.
+  const bool non_hud_sprite = hash == 0xDED9BC60u
+      && (texture_flags & endfield::hud::HUD_SPRITE_TEXTURE) == 0u;
+  const std::lock_guard lock(ui_draw_detection_mutex);
+  auto& state = ui_draw_detection_states[GetCommandListKey(cmd_list)];
+  // The interaction prompt is interleaved with the overworld HUD. Preserve
+  // the existing map-qualified batch across this exact observed shader pair.
+  const bool interaction_prompt = hash == 0x0CF25D6Fu && vertex_hash == 0x3FDE318Au;
+  if (!hud_input_allowed || target.handle == 0u || non_hud_sprite
+      || (!interaction_prompt && std::ranges::find(HUD_PIXEL_SHADERS, hash) == HUD_PIXEL_SHADERS.end())
+      || (state.hud_target != 0u && state.hud_target != target.handle)) {
+    state.hud_target = 0u;
+  } else if (minimap) {
+    state.hud_target = target.handle;
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    // Presentation and shader-compilation stalls must not restart hide timers.
+    // Menus stay visible through the per-command-list draw guard.
+    for (size_t i = 0; i < hud_controls.size(); ++i) {
+      auto& control = hud_controls[i];
+      control.timer.Update(now, static_cast<int>(control.mode), control.delay,
+                           control.reveal_hover >= 0.5f,
+                           hud_hovered == static_cast<int>(i) && (i < 2u || hud_individual_reveal < 0.5f), true);
+    }
+  }
+}
+
+bool InjectHudVisibility(reshade::api::command_list* cmd_list) {
+  const auto* state = renodx::utils::state::GetCurrentState(cmd_list);
+  const auto target = renodx::utils::state::GetRenderTarget(cmd_list, 0u);
+  shader_injection.hud_draw_enabled = 0.f;
+  shader_injection.hud_viewport_height = 0.f;
+  if (state == nullptr || state->viewports.size() != 1u) return true;
+  const auto& viewport = state->viewports.front();
+  if (viewport.x != 0.f || std::min(viewport.y, viewport.y + viewport.height) != 0.f
+      || viewport.width <= 0.f || viewport.height == 0.f) return true;
+  const auto target_resource = cmd_list->get_device()->get_resource_from_view(target);
+  const auto target_desc = cmd_list->get_device()->get_resource_desc(target_resource);
+  // Native float UI targets need the composite's vertical flip. RGBA8 targets
+  // use upright HUD coordinates, including when redirected to an HDR clone.
+  if (target_desc.texture.format == reshade::api::format::r16g16b16a16_float) {
+    shader_injection.hud_draw_enabled = 32.f;
+  }
+  const std::lock_guard lock(ui_draw_detection_mutex);
+  const auto it = ui_draw_detection_states.find(GetCommandListKey(cmd_list));
+  hud_render_aspect = viewport.width / std::abs(viewport.height);
+  if (!hud_input_allowed) return true;
+  for (size_t index = 0; index < dialogue_control_hidden.size(); ++index) {
+    if (dialogue_control_hidden[index] >= 0.5f
+        && !(dialogue_reveal_hover[index] >= 0.5f
+             && dialogue_button_hovered == static_cast<int>(index))) {
+      shader_injection.hud_draw_enabled += static_cast<float>(2u << index);
+    }
+  }
+  shader_injection.ui_aspect_ratio = std::abs(viewport.height) / viewport.width;
+  shader_injection.hud_viewport_height = std::abs(viewport.height);
+  shader_injection.hud_quest_opacity = hud_controls[0].timer.opacity;
+  shader_injection.hud_minimap_opacity = hud_controls[1].timer.opacity;
+  shader_injection.hud_map_buttons_opacity = hud_controls[2].timer.opacity;
+  shader_injection.hud_menu_buttons_opacity = hud_controls[3].timer.opacity;
+  shader_injection.hud_utility_opacity = hud_controls[4].timer.opacity;
+  shader_injection.hud_notification_tick = static_cast<float>(
+      (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()
+       * 60 / 1000) & 0x1FFFFF);
+  shader_injection.hud_notification_tick += static_cast<float>((hud_revealed_buttons >> 16u) << 21u);
+  if (hud_reveal_notification[0] >= 0.5f) {
+    shader_injection.hud_draw_enabled += 4194304.f;
+  }
+  if (hud_reveal_notification[1] >= 0.5f) {
+    shader_injection.hud_draw_enabled += 8388608.f;
+  }
+  shader_injection.hud_draw_enabled += static_cast<float>((hud_revealed_buttons & 65535u) << 6u);
+  // The atlas-qualified minimap background precedes the minimap marker draw.
+  // Supply its dimensions/opacity without authorizing generic region masks.
+  if (it == ui_draw_detection_states.end()
+      || it->second.hud_target == 0u || it->second.hud_target != target.handle) return true;
+  shader_injection.hud_draw_enabled += 1.f;
   return true;
 }
 
@@ -1238,7 +1514,7 @@ bool OnSharedUidPingDraw(reshade::api::command_list* cmd_list) {
     const std::lock_guard lock(ui_draw_detection_mutex);
     const auto state = ui_draw_detection_states.find(GetCommandListKey(cmd_list));
     is_ping_input_candidate = state != ui_draw_detection_states.end()
-        && state->second.is_ping_input_candidate;
+                              && state->second.is_ping_input_candidate;
   }
   OnPingDraw(cmd_list);
   if (shader_injection.ui_visibility < 0.5f) return false;
@@ -1252,8 +1528,8 @@ bool InjectLatencyBarDrawOpacity(reshade::api::command_list* cmd_list) {
     const auto state = ui_draw_detection_states.find(GetCommandListKey(cmd_list));
     shader_injection.latency_bar_draw_opacity =
         state != ui_draw_detection_states.end() && state->second.is_latency_bar_draw_candidate
-        ? shader_injection.ping_text_opacity
-        : 1.f;
+            ? shader_injection.ping_text_opacity
+            : 1.f;
   }
   shader_injection.latency_bar_viewport_width = 0.f;
   shader_injection.latency_bar_viewport_height = 0.f;
@@ -1327,7 +1603,7 @@ bool ReplaceVFXBoostShader(
 
 bool ReplaceImprovedGTAOShader(reshade::api::command_list* cmd_list) {
   return shader_injection.improved_gtao >= 0.5f
-      || shader_injection.disable_game_ao >= 0.5f;
+         || shader_injection.disable_game_ao >= 0.5f;
 }
 
 bool ReplaceDisableGTAOShader(reshade::api::command_list* cmd_list) {
@@ -1364,74 +1640,138 @@ void RegisterUidBypassShader(uint32_t crc) {
   it->second.on_replace = KeepOriginalShader;
 }
 
-
 std::string GetKeyName(int keycode) {
   if (keycode == 0 || keycode >= 256) return "";
 
   static const char* keyboard_keys[256] = {
-    "", "Left Mouse", "Right Mouse", "Cancel", "Middle Mouse", "X1 Mouse", "X2 Mouse", "", "Backspace", "Tab", "", "", "Clear", "Enter", "", "",
-    "Shift", "Control", "Alt", "Pause", "Caps Lock", "", "", "", "", "", "", "Escape", "", "", "", "",
-    "Space", "Page Up", "Page Down", "End", "Home", "Left Arrow", "Up Arrow", "Right Arrow", "Down Arrow", "Select", "", "", "Print Screen", "Insert", "Delete", "Help",
-    "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "", "", "", "", "", "",
-    "", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O",
-    "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "Left Windows", "Right Windows", "Apps", "", "Sleep",
-    "Numpad 0", "Numpad 1", "Numpad 2", "Numpad 3", "Numpad 4", "Numpad 5", "Numpad 6", "Numpad 7", "Numpad 8", "Numpad 9", "Numpad *", "Numpad +", "", "Numpad -", "Numpad Decimal", "Numpad /",
-    "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F14", "F15", "F16",
-    "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24", "", "", "", "", "", "", "", "",
-    "Num Lock", "Scroll Lock", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
-    "Left Shift", "Right Shift", "Left Control", "Right Control", "Left Menu", "Right Menu", "Browser Back", "Browser Forward", "Browser Refresh", "Browser Stop", "Browser Search", "Browser Favorites", "Browser Home", "Volume Mute", "Volume Down", "Volume Up",
-    "Next Track", "Previous Track", "Media Stop", "Media Play/Pause", "Mail", "Media Select", "Launch App 1", "Launch App 2", "", "", "OEM ;", "OEM +", "OEM ,", "OEM -", "OEM .", "OEM /",
-    "OEM ~", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
-    "", "", "", "", "", "", "", "", "", "", "", "OEM [", "OEM \\", "OEM ]", "OEM '", "OEM 8",
-    "", "", "OEM <", "", "", "", "", "", "", "", "", "", "", "", "", "",
-    "", "", "", "", "", "", "Attn", "CrSel", "ExSel", "Erase EOF", "Play", "Zoom", "", "PA1", "OEM Clear", ""
-  };
+      "", "Left Mouse", "Right Mouse", "Cancel", "Middle Mouse", "X1 Mouse", "X2 Mouse", "", "Backspace", "Tab", "", "", "Clear", "Enter", "", "",
+      "Shift", "Control", "Alt", "Pause", "Caps Lock", "", "", "", "", "", "", "Escape", "", "", "", "",
+      "Space", "Page Up", "Page Down", "End", "Home", "Left Arrow", "Up Arrow", "Right Arrow", "Down Arrow", "Select", "", "", "Print Screen", "Insert", "Delete", "Help",
+      "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "", "", "", "", "", "",
+      "", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O",
+      "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "Left Windows", "Right Windows", "Apps", "", "Sleep",
+      "Numpad 0", "Numpad 1", "Numpad 2", "Numpad 3", "Numpad 4", "Numpad 5", "Numpad 6", "Numpad 7", "Numpad 8", "Numpad 9", "Numpad *", "Numpad +", "", "Numpad -", "Numpad Decimal", "Numpad /",
+      "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12", "F13", "F14", "F15", "F16",
+      "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24", "", "", "", "", "", "", "", "",
+      "Num Lock", "Scroll Lock", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+      "Left Shift", "Right Shift", "Left Control", "Right Control", "Left Menu", "Right Menu", "Browser Back", "Browser Forward", "Browser Refresh", "Browser Stop", "Browser Search", "Browser Favorites", "Browser Home", "Volume Mute", "Volume Down", "Volume Up",
+      "Next Track", "Previous Track", "Media Stop", "Media Play/Pause", "Mail", "Media Select", "Launch App 1", "Launch App 2", "", "", "OEM ;", "OEM +", "OEM ,", "OEM -", "OEM .", "OEM /",
+      "OEM ~", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "",
+      "", "", "", "", "", "", "", "", "", "", "", "OEM [", "OEM \\", "OEM ]", "OEM '", "OEM 8",
+      "", "", "OEM <", "", "", "", "", "", "", "", "", "", "", "", "", "",
+      "", "", "", "", "", "", "Attn", "CrSel", "ExSel", "Erase EOF", "Play", "Zoom", "", "PA1", "OEM Clear", ""};
 
   return keyboard_keys[keycode];
 }
 
 int GetLastKeyPressedImGui() {
-
   struct KeyMapping {
     ImGuiKey imgui_key;
     int vk_code;
   };
 
   static const KeyMapping kKeyMappings[] = {
-    // Function keys
-    {ImGuiKey_F1, VK_F1}, {ImGuiKey_F2, VK_F2}, {ImGuiKey_F3, VK_F3}, {ImGuiKey_F4, VK_F4},
-    {ImGuiKey_F5, VK_F5}, {ImGuiKey_F6, VK_F6}, {ImGuiKey_F7, VK_F7}, {ImGuiKey_F8, VK_F8},
-    {ImGuiKey_F9, VK_F9}, {ImGuiKey_F10, VK_F10}, {ImGuiKey_F11, VK_F11}, {ImGuiKey_F12, VK_F12},
-    // Navigation keys
-    {ImGuiKey_Insert, VK_INSERT}, {ImGuiKey_Delete, VK_DELETE}, {ImGuiKey_Home, VK_HOME}, {ImGuiKey_End, VK_END},
-    {ImGuiKey_PageUp, VK_PRIOR}, {ImGuiKey_PageDown, VK_NEXT},
-    // Arrow keys
-    {ImGuiKey_LeftArrow, VK_LEFT}, {ImGuiKey_RightArrow, VK_RIGHT}, {ImGuiKey_UpArrow, VK_UP}, {ImGuiKey_DownArrow, VK_DOWN},
-    // Special keys
-    {ImGuiKey_Backspace, VK_BACK}, {ImGuiKey_Space, VK_SPACE}, {ImGuiKey_Enter, VK_RETURN},
-    {ImGuiKey_Escape, VK_ESCAPE}, {ImGuiKey_Tab, VK_TAB},
-    {ImGuiKey_Pause, VK_PAUSE}, {ImGuiKey_ScrollLock, VK_SCROLL}, {ImGuiKey_PrintScreen, VK_SNAPSHOT},
-    // Numpad
-    {ImGuiKey_Keypad0, VK_NUMPAD0}, {ImGuiKey_Keypad1, VK_NUMPAD1}, {ImGuiKey_Keypad2, VK_NUMPAD2},
-    {ImGuiKey_Keypad3, VK_NUMPAD3}, {ImGuiKey_Keypad4, VK_NUMPAD4}, {ImGuiKey_Keypad5, VK_NUMPAD5},
-    {ImGuiKey_Keypad6, VK_NUMPAD6}, {ImGuiKey_Keypad7, VK_NUMPAD7}, {ImGuiKey_Keypad8, VK_NUMPAD8},
-    {ImGuiKey_Keypad9, VK_NUMPAD9}, {ImGuiKey_KeypadDecimal, VK_DECIMAL},
-    {ImGuiKey_KeypadDivide, VK_DIVIDE}, {ImGuiKey_KeypadMultiply, VK_MULTIPLY},
-    {ImGuiKey_KeypadSubtract, VK_SUBTRACT}, {ImGuiKey_KeypadAdd, VK_ADD}, {ImGuiKey_KeypadEnter, VK_RETURN},
-    // Letters
-    {ImGuiKey_A, 'A'}, {ImGuiKey_B, 'B'}, {ImGuiKey_C, 'C'}, {ImGuiKey_D, 'D'}, {ImGuiKey_E, 'E'},
-    {ImGuiKey_F, 'F'}, {ImGuiKey_G, 'G'}, {ImGuiKey_H, 'H'}, {ImGuiKey_I, 'I'}, {ImGuiKey_J, 'J'},
-    {ImGuiKey_K, 'K'}, {ImGuiKey_L, 'L'}, {ImGuiKey_M, 'M'}, {ImGuiKey_N, 'N'}, {ImGuiKey_O, 'O'},
-    {ImGuiKey_P, 'P'}, {ImGuiKey_Q, 'Q'}, {ImGuiKey_R, 'R'}, {ImGuiKey_S, 'S'}, {ImGuiKey_T, 'T'},
-    {ImGuiKey_U, 'U'}, {ImGuiKey_V, 'V'}, {ImGuiKey_W, 'W'}, {ImGuiKey_X, 'X'}, {ImGuiKey_Y, 'Y'}, {ImGuiKey_Z, 'Z'},
-    // Numbers
-    {ImGuiKey_0, '0'}, {ImGuiKey_1, '1'}, {ImGuiKey_2, '2'}, {ImGuiKey_3, '3'}, {ImGuiKey_4, '4'},
-    {ImGuiKey_5, '5'}, {ImGuiKey_6, '6'}, {ImGuiKey_7, '7'}, {ImGuiKey_8, '8'}, {ImGuiKey_9, '9'},
-    // Punctuation
-    {ImGuiKey_GraveAccent, VK_OEM_3}, {ImGuiKey_Minus, VK_OEM_MINUS}, {ImGuiKey_Equal, VK_OEM_PLUS},
-    {ImGuiKey_LeftBracket, VK_OEM_4}, {ImGuiKey_RightBracket, VK_OEM_6}, {ImGuiKey_Backslash, VK_OEM_5},
-    {ImGuiKey_Semicolon, VK_OEM_1}, {ImGuiKey_Apostrophe, VK_OEM_7},
-    {ImGuiKey_Comma, VK_OEM_COMMA}, {ImGuiKey_Period, VK_OEM_PERIOD}, {ImGuiKey_Slash, VK_OEM_2},
+      // Function keys
+      {ImGuiKey_F1, VK_F1},
+      {ImGuiKey_F2, VK_F2},
+      {ImGuiKey_F3, VK_F3},
+      {ImGuiKey_F4, VK_F4},
+      {ImGuiKey_F5, VK_F5},
+      {ImGuiKey_F6, VK_F6},
+      {ImGuiKey_F7, VK_F7},
+      {ImGuiKey_F8, VK_F8},
+      {ImGuiKey_F9, VK_F9},
+      {ImGuiKey_F10, VK_F10},
+      {ImGuiKey_F11, VK_F11},
+      {ImGuiKey_F12, VK_F12},
+      // Navigation keys
+      {ImGuiKey_Insert, VK_INSERT},
+      {ImGuiKey_Delete, VK_DELETE},
+      {ImGuiKey_Home, VK_HOME},
+      {ImGuiKey_End, VK_END},
+      {ImGuiKey_PageUp, VK_PRIOR},
+      {ImGuiKey_PageDown, VK_NEXT},
+      // Arrow keys
+      {ImGuiKey_LeftArrow, VK_LEFT},
+      {ImGuiKey_RightArrow, VK_RIGHT},
+      {ImGuiKey_UpArrow, VK_UP},
+      {ImGuiKey_DownArrow, VK_DOWN},
+      // Special keys
+      {ImGuiKey_Backspace, VK_BACK},
+      {ImGuiKey_Space, VK_SPACE},
+      {ImGuiKey_Enter, VK_RETURN},
+      {ImGuiKey_Escape, VK_ESCAPE},
+      {ImGuiKey_Tab, VK_TAB},
+      {ImGuiKey_Pause, VK_PAUSE},
+      {ImGuiKey_ScrollLock, VK_SCROLL},
+      {ImGuiKey_PrintScreen, VK_SNAPSHOT},
+      // Numpad
+      {ImGuiKey_Keypad0, VK_NUMPAD0},
+      {ImGuiKey_Keypad1, VK_NUMPAD1},
+      {ImGuiKey_Keypad2, VK_NUMPAD2},
+      {ImGuiKey_Keypad3, VK_NUMPAD3},
+      {ImGuiKey_Keypad4, VK_NUMPAD4},
+      {ImGuiKey_Keypad5, VK_NUMPAD5},
+      {ImGuiKey_Keypad6, VK_NUMPAD6},
+      {ImGuiKey_Keypad7, VK_NUMPAD7},
+      {ImGuiKey_Keypad8, VK_NUMPAD8},
+      {ImGuiKey_Keypad9, VK_NUMPAD9},
+      {ImGuiKey_KeypadDecimal, VK_DECIMAL},
+      {ImGuiKey_KeypadDivide, VK_DIVIDE},
+      {ImGuiKey_KeypadMultiply, VK_MULTIPLY},
+      {ImGuiKey_KeypadSubtract, VK_SUBTRACT},
+      {ImGuiKey_KeypadAdd, VK_ADD},
+      {ImGuiKey_KeypadEnter, VK_RETURN},
+      // Letters
+      {ImGuiKey_A, 'A'},
+      {ImGuiKey_B, 'B'},
+      {ImGuiKey_C, 'C'},
+      {ImGuiKey_D, 'D'},
+      {ImGuiKey_E, 'E'},
+      {ImGuiKey_F, 'F'},
+      {ImGuiKey_G, 'G'},
+      {ImGuiKey_H, 'H'},
+      {ImGuiKey_I, 'I'},
+      {ImGuiKey_J, 'J'},
+      {ImGuiKey_K, 'K'},
+      {ImGuiKey_L, 'L'},
+      {ImGuiKey_M, 'M'},
+      {ImGuiKey_N, 'N'},
+      {ImGuiKey_O, 'O'},
+      {ImGuiKey_P, 'P'},
+      {ImGuiKey_Q, 'Q'},
+      {ImGuiKey_R, 'R'},
+      {ImGuiKey_S, 'S'},
+      {ImGuiKey_T, 'T'},
+      {ImGuiKey_U, 'U'},
+      {ImGuiKey_V, 'V'},
+      {ImGuiKey_W, 'W'},
+      {ImGuiKey_X, 'X'},
+      {ImGuiKey_Y, 'Y'},
+      {ImGuiKey_Z, 'Z'},
+      // Numbers
+      {ImGuiKey_0, '0'},
+      {ImGuiKey_1, '1'},
+      {ImGuiKey_2, '2'},
+      {ImGuiKey_3, '3'},
+      {ImGuiKey_4, '4'},
+      {ImGuiKey_5, '5'},
+      {ImGuiKey_6, '6'},
+      {ImGuiKey_7, '7'},
+      {ImGuiKey_8, '8'},
+      {ImGuiKey_9, '9'},
+      // Punctuation
+      {ImGuiKey_GraveAccent, VK_OEM_3},
+      {ImGuiKey_Minus, VK_OEM_MINUS},
+      {ImGuiKey_Equal, VK_OEM_PLUS},
+      {ImGuiKey_LeftBracket, VK_OEM_4},
+      {ImGuiKey_RightBracket, VK_OEM_6},
+      {ImGuiKey_Backslash, VK_OEM_5},
+      {ImGuiKey_Semicolon, VK_OEM_1},
+      {ImGuiKey_Apostrophe, VK_OEM_7},
+      {ImGuiKey_Comma, VK_OEM_COMMA},
+      {ImGuiKey_Period, VK_OEM_PERIOD},
+      {ImGuiKey_Slash, VK_OEM_2},
   };
 
   for (const auto& mapping : kKeyMappings) {
@@ -1473,11 +1813,8 @@ renodx::utils::settings::Settings settings = {
           ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.f, 0.75f, 0.3f, 1.f));
           ImGui::TextWrapped("Tone mapper changed: restart the game or return to the login screen to rebuild the color LUT.");
           ImGui::PopStyleColor();
-          return false;
-        },
-        .is_visible = [] {
-          return GetTickCount64() < tone_mapper_warning_until.load(std::memory_order_relaxed);
-        },
+          return false; },
+        .is_visible = [] { return GetTickCount64() < tone_mapper_warning_until.load(std::memory_order_relaxed); },
     },
     new renodx::utils::settings::Setting{
         .key = "ToneMapPeakNits",
@@ -1724,8 +2061,7 @@ renodx::utils::settings::Settings settings = {
               "Click to set keyboard shortcut",
               buf,
               sizeof(buf),
-              ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_NoUndoRedo | ImGuiInputTextFlags_NoHorizontalScroll
-          );
+              ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_NoUndoRedo | ImGuiInputTextFlags_NoHorizontalScroll);
 
           if (ImGui::IsItemActive()) {
             hotkey_input_active = true;
@@ -1803,13 +2139,13 @@ renodx::utils::settings::Settings settings = {
         .parse = [](float value) { return value * 0.01f; },
     },
     new renodx::utils::settings::Setting({
-            .key = "FxGrainStrength",
-            .binding = &shader_injection.custom_grain_strength,
-            .default_value = 0.f,
-            .label = "Film Grain",
-            .section = "Effects",
-            .parse = [](float value) { return value * 0.01f; },
-        }),
+        .key = "FxGrainStrength",
+        .binding = &shader_injection.custom_grain_strength,
+        .default_value = 0.f,
+        .label = "Film Grain",
+        .section = "Effects",
+        .parse = [](float value) { return value * 0.01f; },
+    }),
     new renodx::utils::settings::Setting{
         .key = "VignetteStrength",
         .binding = &shader_injection.vignette_strength,
@@ -2013,9 +2349,7 @@ renodx::utils::settings::Settings settings = {
         .section = "Display Output",
         .tooltip = "Selects SDR, HDR10/PQ, or scRGB output. Vulkan surface format changes apply when the game recreates its swapchain (normally on restart).",
         .labels = {"None", "SRGB", "2.2", "2.4", "HDR10", "scRGB"},
-        .on_change_value = [](float previous, float current) {
-          ApplySwapChainEncodingTarget(current);
-        },
+        .on_change_value = [](float previous, float current) { ApplySwapChainEncodingTarget(current); },
         .is_global = true,
         .is_visible = []() { return current_settings_mode >= 1; },
     },
@@ -2038,8 +2372,7 @@ renodx::utils::settings::Settings settings = {
         .tooltip = "HDR support for DLSS Frame Generation. Restart after changes.",
         .labels = {"Off", "DLSS FG"},
         .on_change_value = [](float, float current) {
-          if (current < 0.5f) endfield::frame_generation::stopped.store(true);
-        },
+          if (current < 0.5f) endfield::frame_generation::stopped.store(true); },
         .is_global = true,
         .is_visible = [] { return endfield::early_load::configured; },
     },
@@ -2224,7 +2557,7 @@ renodx::utils::settings::Settings settings = {
             }
           }
           ImGui::Text("Active preset: %s", shader_injection.tech_test_look >= 1.f ? "Tech Test Look"
-              : (active_grading_preset == 3.f ? "Defaults" : labels[std::clamp(static_cast<int>(active_grading_preset), 0, 3)]));
+                                                                                  : (active_grading_preset == 3.f ? "Defaults" : labels[std::clamp(static_cast<int>(active_grading_preset), 0, 3)]));
           return false;
         },
     },
@@ -2334,24 +2667,24 @@ renodx::utils::settings::Settings settings = {
 };
 
 void OnPresetOff() {
-     renodx::utils::settings::UpdateSetting("ToneMapType", 0.f);
-     renodx::utils::settings::UpdateSetting("ToneMapPeakNits", 203.f);
-     renodx::utils::settings::UpdateSetting("ToneMapGameNits", 203.f);
-     renodx::utils::settings::UpdateSetting("ToneMapUINits", 203.f);
-     renodx::utils::settings::UpdateSetting("ToneMapGammaCorrection", 1.f);
-     renodx::utils::settings::UpdateSetting("GammaCorrection", 1.f);
-     renodx::utils::settings::UpdateSetting("SwapChainGammaCorrection", 1.f);
-     renodx::utils::settings::UpdateSetting("HDRSun", 0.f);
-     renodx::utils::settings::UpdateSetting("Godrays", 1.f);
-     renodx::utils::settings::UpdateSetting("SHADOW_HARDENING", 0.f);
-     renodx::utils::settings::UpdateSetting("FogModification", 0.f);
-     renodx::utils::settings::UpdateSetting("CubemapAmbientLink", 0.f);
-      renodx::utils::settings::UpdateSetting("GlassTransparency", 0.f);
-      renodx::utils::settings::UpdateSetting("VFXBoost", 0.f);
-     SetVfxBoostTrackingEnabled(false);
-     renodx::utils::settings::UpdateSetting("ImprovedSSR", 0.f);
-     renodx::utils::settings::UpdateSetting("ImprovedGTAO", 0.f);
-     renodx::utils::settings::UpdateSetting("TechTestLook", 0.f);
+  renodx::utils::settings::UpdateSetting("ToneMapType", 0.f);
+  renodx::utils::settings::UpdateSetting("ToneMapPeakNits", 203.f);
+  renodx::utils::settings::UpdateSetting("ToneMapGameNits", 203.f);
+  renodx::utils::settings::UpdateSetting("ToneMapUINits", 203.f);
+  renodx::utils::settings::UpdateSetting("ToneMapGammaCorrection", 1.f);
+  renodx::utils::settings::UpdateSetting("GammaCorrection", 1.f);
+  renodx::utils::settings::UpdateSetting("SwapChainGammaCorrection", 1.f);
+  renodx::utils::settings::UpdateSetting("HDRSun", 0.f);
+  renodx::utils::settings::UpdateSetting("Godrays", 1.f);
+  renodx::utils::settings::UpdateSetting("SHADOW_HARDENING", 0.f);
+  renodx::utils::settings::UpdateSetting("FogModification", 0.f);
+  renodx::utils::settings::UpdateSetting("CubemapAmbientLink", 0.f);
+  renodx::utils::settings::UpdateSetting("GlassTransparency", 0.f);
+  renodx::utils::settings::UpdateSetting("VFXBoost", 0.f);
+  SetVfxBoostTrackingEnabled(false);
+  renodx::utils::settings::UpdateSetting("ImprovedSSR", 0.f);
+  renodx::utils::settings::UpdateSetting("ImprovedGTAO", 0.f);
+  renodx::utils::settings::UpdateSetting("TechTestLook", 0.f);
 }
 
 bool OnDraw(
@@ -2360,6 +2693,7 @@ bool OnDraw(
     uint32_t instance_count,
     uint32_t first_vertex,
     uint32_t first_instance) {
+  ObserveHudDraw(cmd_list);
   {
     const std::lock_guard lock(ui_draw_detection_mutex);
     auto& state = ui_draw_detection_states[GetCommandListKey(cmd_list)];
@@ -2377,6 +2711,7 @@ bool OnDrawIndexed(
     uint32_t first_index,
     int32_t vertex_offset,
     uint32_t first_instance) {
+  ObserveHudDraw(cmd_list);
   const uint64_t command_list_key = GetCommandListKey(cmd_list);
   {
     const std::lock_guard lock(ui_draw_detection_mutex);
@@ -2414,15 +2749,15 @@ bool OnDrawIndexed(
   auto* shader_state = renodx::utils::shader::GetCurrentState(cmd_list);
   const uint32_t vertex_shader_hash =
       shader_state != nullptr && ping_geometry_candidate
-      ? renodx::utils::shader::GetCurrentVertexShaderHash(shader_state)
-      : 0u;
+          ? renodx::utils::shader::GetCurrentVertexShaderHash(shader_state)
+          : 0u;
   const uint32_t pixel_shader_hash = shader_state != nullptr
-      ? renodx::utils::shader::GetCurrentPixelShaderHash(shader_state)
-      : 0u;
+                                         ? renodx::utils::shader::GetCurrentPixelShaderHash(shader_state)
+                                         : 0u;
 
   if (ui_hidden
       && std::ranges::find(kVulkanDirectHidePixelShaderHashes, pixel_shader_hash)
-          != kVulkanDirectHidePixelShaderHashes.end()) {
+             != kVulkanDirectHidePixelShaderHashes.end()) {
     const std::lock_guard lock(ui_draw_detection_mutex);
     ui_draw_detection_states[command_list_key].draw_call_vertex_count = 0;
     return true;
@@ -2452,7 +2787,7 @@ bool OnDrawIndexed(
     // This exact pair and three-quad draw are shared with UID text, so only
     // consume the identified bar draw, not every draw using the pixel shader.
     return is_shared_uid_ping_draw_candidate && is_ping_input_candidate
-        && (ui_hidden || !IsVisible(shader_injection.ping_text_opacity));
+           && (ui_hidden || !IsVisible(shader_injection.ping_text_opacity));
   }
 
   bool is_uid_input_candidate = false;
@@ -2460,9 +2795,9 @@ bool OnDrawIndexed(
     const std::lock_guard lock(ui_draw_detection_mutex);
     auto& state = ui_draw_detection_states[command_list_key];
     state.is_uid_input_candidate = uid_geometry_candidate
-        && (state.is_ping_drawn
-            || pixel_shader_hash == kVulkanUidPixelShaderHash
-            || pixel_shader_hash == kVulkanSharedUidPingPixelShaderHash);
+                                   && (state.is_ping_drawn
+                                       || pixel_shader_hash == kVulkanUidPixelShaderHash
+                                       || pixel_shader_hash == kVulkanSharedUidPingPixelShaderHash);
     state.draw_call_vertex_count = 0;
     is_uid_input_candidate = state.is_uid_input_candidate;
   }
@@ -2490,7 +2825,7 @@ bool OnDrawIndexed(
 // Classify or consume UI draws before shader callbacks can inject or replay them.
 // Separate ReShade draw handlers can run after the cross-addon dispatcher.
 inline constexpr auto OnUiCommand = []<typename Arguments>(
-    renodx::utils::command_action::CommandContext<Arguments>& context)
+                                        renodx::utils::command_action::CommandContext<Arguments>& context)
     -> renodx::utils::command_action::CallbackResult<
         renodx::utils::command_action::CommandContext<Arguments>> {
   if (!endfield::renderer::IsSupported(context.cmd_list->get_device())) return {};
@@ -2539,6 +2874,71 @@ void OnPresent(reshade::api::command_queue* queue,
   auto* device = queue->get_device();
   auto bb = device->get_resource_desc(swapchain->get_current_back_buffer());
 
+  {
+    const auto window = static_cast<HWND>(swapchain->get_hwnd());
+    POINT mouse = {};
+    RECT client = {};
+    CURSORINFO cursor = {.cbSize = sizeof(CURSORINFO)};
+    const bool foreground = window != nullptr && GetForegroundWindow() == window;
+    const bool has_cursor = foreground && GetCursorInfo(&cursor)
+                            && (cursor.flags & CURSOR_SHOWING) != 0u && GetCursorPos(&mouse)
+                            && ScreenToClient(window, &mouse) && GetClientRect(window, &client)
+                            && client.right > 0 && client.bottom > 0;
+    int hovered = -1;
+    int button_hovered = -1;
+    int dialogue_hovered = -1;
+    const std::lock_guard lock(ui_draw_detection_mutex);
+    if (has_cursor) {
+      // Map the cursor through the aspect-preserving presentation rectangle.
+      // Client coordinates include bars when the selected resolution has a different aspect.
+      float image_width = static_cast<float>(client.right);
+      float image_height = image_width / hud_render_aspect;
+      if (image_height > client.bottom) {
+        image_height = static_cast<float>(client.bottom);
+        image_width = image_height * hud_render_aspect;
+      }
+      float left = (client.right - image_width) * 0.5f;
+      float top = (client.bottom - image_height) * 0.5f;
+      if (dest_rect != nullptr && dest_rect->right > dest_rect->left && dest_rect->bottom > dest_rect->top) {
+        left = static_cast<float>(dest_rect->left);
+        top = static_cast<float>(dest_rect->top);
+        image_width = static_cast<float>(dest_rect->right - dest_rect->left);
+        image_height = static_cast<float>(dest_rect->bottom - dest_rect->top);
+      }
+      const float x = static_cast<float>(mouse.x) - left;
+      const float y = static_cast<float>(mouse.y) - top;
+      if (x >= 0.f && y >= 0.f && x < image_width && y < image_height) {
+        const float scale = EndfieldHudScale(image_height, 1.f / hud_render_aspect);
+        hovered = EndfieldHudRegion(x * scale, y * scale, image_width * scale, image_height * scale);
+        button_hovered = EndfieldHudButton(x * scale, y * scale, image_width * scale, image_height * scale);
+        dialogue_hovered = EndfieldDialogueButton(x * scale, y * scale, image_width * scale);
+      }
+    }
+    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    hud_revealed_buttons = 0u;
+    for (int button = 0; button < ENDFIELD_HUD_BUTTON_COUNT; ++button) {
+      const int group = (button < 6 || button == ENDFIELD_HUD_DIJIANG_BUTTON ? 2 : (button == 17 ? 4 : 3));
+      const auto& control = hud_controls[group];
+      if (hud_individual_reveal < 0.5f || control.reveal_hover < 0.5f || control.mode < 0.5f || hotkey_input_active) {
+        hud_button_deadlines[button] = 0.;
+        continue;
+      }
+      if (button_hovered == button) {
+        hud_button_deadlines[button] = now + (control.mode >= 1.5f ? std::clamp(control.delay, 3.f, 300.f) : 0.);
+      }
+      if (button_hovered == button || now < hud_button_deadlines[button]) {
+        hud_revealed_buttons |= 1u << button;
+      }
+    }
+    // Command-list reset and the draw sequence delimit HUD permission. Present
+    // can overlap recording another frame and must not clear that frame's state.
+    hud_hovered = hovered;
+    hud_button_hovered = button_hovered;
+    dialogue_button_hovered = dialogue_hovered;
+    // Focus gates cursor input only. Alt-tabbing must not reveal a hidden HUD.
+    hud_input_allowed = !hotkey_input_active;
+  }
+
   // Keep proxy encoding matched to the active native surface format.
   if (bb.type != reshade::api::resource_type::unknown) {
     const auto format = reshade::api::format_to_default_typed(
@@ -2551,9 +2951,9 @@ void OnPresent(reshade::api::command_queue* queue,
         return format == reshade::api::format::r16g16b16a16_float;
       }
       return format == reshade::api::format::r8g8b8a8_unorm
-          || format == reshade::api::format::r8g8b8a8_unorm_srgb
-          || format == reshade::api::format::b8g8r8a8_unorm
-          || format == reshade::api::format::b8g8r8a8_unorm_srgb;
+             || format == reshade::api::format::r8g8b8a8_unorm_srgb
+             || format == reshade::api::format::b8g8r8a8_unorm
+             || format == reshade::api::format::b8g8r8a8_unorm_srgb;
     };
 
     if (is_format_compatible(requested_swap_chain_encoding)) {
@@ -2729,8 +3129,26 @@ void UseRenoDXRuntime(DWORD fdw_reason) {
   if (fdw_reason == DLL_PROCESS_ATTACH) {
     renodx::utils::command_action::Register(
         OnUiCommand, {.command_types = renodx::utils::command_action::COMMAND_TYPE_DIRECT_DRAW});
+    reshade::register_event<reshade::addon_event::init_device>(endfield::hud::OnInitNotificationDevice);
+    reshade::register_event<reshade::addon_event::copy_descriptor_tables>(endfield::hud::OnCopyHudTextureTables);
+    reshade::register_event<reshade::addon_event::update_descriptor_tables>(endfield::hud::OnUpdateHudTextureTables);
+    reshade::register_event<reshade::addon_event::destroy_resource_view>(endfield::hud::OnDestroyHudTextureView);
+    reshade::register_event<reshade::addon_event::init_resource_view>(endfield::hud::OnInitHudTextureView);
+    reshade::register_event<reshade::addon_event::destroy_device>(endfield::hud::OnDestroyHudTextureDevice);
+    reshade::register_event<reshade::addon_event::init_device>(endfield::hud::OnInitHudTextureDevice);
+    reshade::register_event<reshade::addon_event::init_swapchain>(endfield::hud::OnInitNotificationSwapchain);
+    reshade::register_event<reshade::addon_event::destroy_device>(endfield::hud::OnDestroyNotificationDevice);
   } else if (fdw_reason == DLL_PROCESS_DETACH) {
     renodx::utils::command_action::Unregister(OnUiCommand);
+    reshade::unregister_event<reshade::addon_event::init_device>(endfield::hud::OnInitNotificationDevice);
+    reshade::unregister_event<reshade::addon_event::copy_descriptor_tables>(endfield::hud::OnCopyHudTextureTables);
+    reshade::unregister_event<reshade::addon_event::update_descriptor_tables>(endfield::hud::OnUpdateHudTextureTables);
+    reshade::unregister_event<reshade::addon_event::destroy_resource_view>(endfield::hud::OnDestroyHudTextureView);
+    reshade::unregister_event<reshade::addon_event::init_resource_view>(endfield::hud::OnInitHudTextureView);
+    reshade::unregister_event<reshade::addon_event::destroy_device>(endfield::hud::OnDestroyHudTextureDevice);
+    reshade::unregister_event<reshade::addon_event::init_device>(endfield::hud::OnInitHudTextureDevice);
+    reshade::unregister_event<reshade::addon_event::init_swapchain>(endfield::hud::OnInitNotificationSwapchain);
+    reshade::unregister_event<reshade::addon_event::destroy_device>(endfield::hud::OnDestroyNotificationDevice);
   }
   renodx::mods::shader::Use(fdw_reason, custom_shaders, &shader_injection);
   renodx::utils::state::Use(fdw_reason);
@@ -2829,7 +3247,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         }
         reshade::register_event<reshade::addon_event::init_effect_runtime>(endfield::early_load::OnInitEffectRuntime);
         endfield::frame_generation::active_at_startup = endfield::frame_generation::requested_at_startup
-            && endfield::early_load::configured_at_startup && encoding == 4.f;
+                                                        && endfield::early_load::configured_at_startup && encoding == 4.f;
         reshade::log::message(reshade::log::level::info,
                               endfield::frame_generation::active_at_startup
                                   ? "Endfield: frame generation requested with early loading and HDR10."
@@ -2932,8 +3350,14 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
             .name = "Endfield shader-selected HDR post-process intermediate",
         });
         constexpr std::array<uint32_t, 8> reshade_before_ui_crcs = {
-            0x4E327CFCu, 0x3AEAD136u, 0x2B455E28u, 0x1B28B6CCu,
-            0x1A15886Au, 0x133D5009u, 0xB0D5D8CDu, 0x223180CFu,
+            0x4E327CFCu,
+            0x3AEAD136u,
+            0x2B455E28u,
+            0x1B28B6CCu,
+            0x1A15886Au,
+            0x133D5009u,
+            0xB0D5D8CDu,
+            0x223180CFu,
         };
         for (const uint32_t crc : reshade_before_ui_crcs) {
           auto it = custom_shaders.find(crc);
@@ -2947,7 +3371,9 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           }
         }
         const uint32_t improved_gtao_crcs[] = {
-            0x902C57D5u, 0xAC758574u, 0x02D76FA7u,
+            0x902C57D5u,
+            0xAC758574u,
+            0x02D76FA7u,
         };
         for (uint32_t crc : improved_gtao_crcs) {
           auto it = custom_shaders.find(crc);
@@ -3000,7 +3426,7 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
               const std::lock_guard lock(ui_draw_detection_mutex);
               const auto state = ui_draw_detection_states.find(GetCommandListKey(cmd_list));
               return state != ui_draw_detection_states.end()
-                  && state->second.is_latency_bar_draw_candidate;
+                     && state->second.is_latency_bar_draw_candidate;
             };
         custom_shaders.at(kVulkanLatencyBarShaderPair.pixel_shader_hash).on_inject =
             InjectLatencyBarDrawOpacity;
@@ -3009,8 +3435,8 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           auto pixel_it = custom_shaders.find(pair.pixel_shader_hash);
           const auto on_draw =
               pair.pixel_shader_hash == kVulkanSharedUidPingPixelShaderHash
-              ? OnSharedUidPingDraw
-              : OnPingDraw;
+                  ? OnSharedUidPingDraw
+                  : OnPingDraw;
           if (pixel_it == custom_shaders.end()) {
             renodx::mods::shader::CustomShader cs{};
             cs.crc32 = pair.pixel_shader_hash;
@@ -3021,6 +3447,108 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
           }
         }
 
+        for (auto& control : hud_controls) {
+          settings.push_back(new renodx::utils::settings::Setting{
+              .key = std::string(control.key) + "Mode",
+              .binding = &control.mode,
+              .value_type = renodx::utils::settings::SettingValueType::INTEGER,
+              .default_value = 0.f,
+              .label = "Visibility",
+              .section = std::string("HUD: ") + control.label,
+              .tooltip = "Gameplay HUD only. Unknown UI layouts remain visible. Auto-hide can reveal this group on hover.",
+              .labels = {"Visible", "Hidden", "Auto-hide"},
+          });
+          settings.push_back(new renodx::utils::settings::Setting{
+              .key = std::string(control.key) + "Delay",
+              .binding = &control.delay,
+              .default_value = 15.f,
+              .label = "Hide after",
+              .section = std::string("HUD: ") + control.label,
+              .tooltip = "Seconds before hiding this group after it appears or the cursor leaves it.",
+              .min = 3.f,
+              .max = 300.f,
+              .is_visible = [control = &control] { return control->mode >= 1.5f; },
+          });
+          settings.push_back(new renodx::utils::settings::Setting{
+              .key = std::string(control.key) + "Hover",
+              .binding = &control.reveal_hover,
+              .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+              .default_value = 1.f,
+              .label = "Reveal on hover",
+              .section = std::string("HUD: ") + control.label,
+              .tooltip = "Reveal an auto-hidden group with the visible mouse cursor. Move out and back in after returning from a menu.",
+              .is_visible = [control = &control] { return control->mode >= 0.5f; },
+          });
+        }
+        constexpr std::array dialogue_labels = {"Log", "Hide UI", "Auto", "Skip"};
+        for (size_t index = 0; index < hud_reveal_notification.size(); ++index) {
+          settings.push_back(new renodx::utils::settings::Setting{
+              .key = std::string(hud_controls[index + 2].key) + "Notification",
+              .binding = &hud_reveal_notification[index],
+              .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+              .default_value = 0.f,
+              .label = "Reveal on notification",
+              .section = std::string("HUD: ") + hud_controls[index + 2].label,
+              .tooltip = "Experimental: reveal only the button with an orange notification effect. Keeps it visible for one second after the last pulse.",
+          });
+        }
+        settings.push_back(new renodx::utils::settings::Setting{
+            .key = "HudIndividualReveal",
+            .binding = &hud_individual_reveal,
+            .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+            .default_value = 1.f,
+            .label = "Reveal buttons individually",
+            .section = "HUD: Reveal Behavior",
+            .tooltip = "Hover reveals only the pointed-at map/menu button. Turn off to reveal the whole group. Uses each group's Reveal on hover setting.",
+        });
+        for (size_t index = 0; index < dialogue_control_hidden.size(); ++index) {
+          settings.push_back(new renodx::utils::settings::Setting{
+              .key = std::string("HudDialogueHide") + std::to_string(index),
+              .binding = &dialogue_control_hidden[index],
+              .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+              .default_value = 0.f,
+              .label = std::string("Hide ") + dialogue_labels[index],
+              .section = "HUD: Dialogue Controls",
+              .tooltip = "Hide the matched dialogue control sprite and key hint. Subtitles and dialogue choices remain visible.",
+          });
+          settings.push_back(new renodx::utils::settings::Setting{
+              .key = std::string("HudDialogueHover") + std::to_string(index),
+              .binding = &dialogue_reveal_hover[index],
+              .value_type = renodx::utils::settings::SettingValueType::BOOLEAN,
+              .default_value = 1.f,
+              .label = std::string("Reveal ") + dialogue_labels[index] + " on hover",
+              .section = "HUD: Dialogue Controls",
+              .tooltip = "Reveal this dialogue control and its key hint while the visible cursor is over it.",
+              .is_visible = [index] { return dialogue_control_hidden[index] >= 0.5f; },
+          });
+        }
+        for (const uint32_t hash : HUD_PIXEL_SHADERS) {
+          auto& shader = custom_shaders.at(hash);
+          shader.views.push_back({
+              .type = reshade::api::descriptor_type::buffer_unordered_access_view,
+              .slot = 0u,
+              .space = 4u,
+              .get_view = [](reshade::api::command_list* cmd_list) {
+                const auto* data = cmd_list->get_device()->get_private_data<endfield::hud::NotificationData>();
+                return data != nullptr ? data->view : reshade::api::resource_view{};
+              },
+          });
+          if (hash != kVulkanSharedUidPingPixelShaderHash) {
+            shader.on_draw = OnUiVisibilityDraw;
+          }
+          shader.on_replace = [](reshade::api::command_list* cmd_list) {
+            const auto* notification_data = cmd_list->get_device()->get_private_data<endfield::hud::NotificationData>();
+            // Keep the injected layout and notification descriptor active when the last
+            // HUD option is disabled. Visibility changes through opacity constants only.
+            return notification_data != nullptr && notification_data->view.handle != 0u;
+          };
+          shader.on_inject = [hash](reshade::api::command_list* cmd_list) {
+            if (hash == kVulkanLatencyBarShaderPair.pixel_shader_hash) {
+              InjectLatencyBarDrawOpacity(cmd_list);
+            }
+            return InjectHudVisibility(cmd_list);
+          };
+        }
         endfield::menu::Configure(&settings);
         endfield::renderer::Configure(&custom_shaders);
         initialized = true;

@@ -1,4 +1,4 @@
-#include "../shared.h"
+#include "./hud_visibility.hlsli"
 
 // Endfield 1.6 native UI material; paired with 0xB698614D for the latency bar.
 struct _11
@@ -174,14 +174,26 @@ SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
     float2 viewport_size = float2(shader_injection.latency_bar_viewport_width,
                                  shader_injection.latency_bar_viewport_height);
     float2 uv_pixel_size = fwidth(_4);
-    if (LATENCY_BAR_DRAW_OPACITY < 0.5f && all(viewport_size > 0.0f)) {
-        float2 screen_uv = stage_input.position.xy / viewport_size;
+    uint texture_width, texture_height;
+    _16.GetDimensions(texture_width, texture_height);
+    // Loading-screen artwork shares this material. Only the captured HUD
+    // atlases, solid accents and quest strip may receive HUD-region masks.
+    bool hud_texture = (texture_width == 2048u && texture_height == 1024u)
+        || (texture_width == 4u && texture_height == 4u)
+        || (texture_width == 728u && texture_height == 68u);
+    // The captured bar samples the 4x4 solid texture. Dialogue gradients and
+    // buttons use the shared 2048x1024 atlas, even when their draw counts match.
+    if (LATENCY_BAR_DRAW_OPACITY < 0.5f && all(viewport_size > 0.0f)
+        && texture_width == 4 && texture_height == 4) {
+        float2 bar_position = stage_input.position.xy;
+        if ((uint(shader_injection.hud_draw_enabled) & 32u) != 0u) bar_position.y = viewport_size.y - bar_position.y;
+        float2 screen_uv = bar_position / viewport_size;
         bool is_hud_latency_bar = screen_uv.x >= 0.005f && screen_uv.x <= 0.035f
             && screen_uv.y >= 0.95f && screen_uv.y <= 0.995f;
-        bool is_transition_latency_bar = stage_input.position.x >= 20.0f
-            && stage_input.position.x <= 60.0f
-            && stage_input.position.y >= 15.0f
-            && stage_input.position.y <= 50.0f
+        bool is_transition_latency_bar = bar_position.x >= 20.0f
+            && bar_position.x <= 60.0f
+            && bar_position.y >= 15.0f
+            && bar_position.y <= 50.0f
             && uv_pixel_size.x >= 0.1f && uv_pixel_size.y >= 0.05f;
         if (is_hud_latency_bar || is_transition_latency_bar) {
             discard;
@@ -189,6 +201,106 @@ SPIRV_Cross_Output main(SPIRV_Cross_Input stage_input)
     }
     // RenoDX code end
     SPIRV_Cross_Output stage_output;
+    // RenoDX: fade only the classified gameplay HUD region; preserve premultiplied blending.
+    float opacity = hud_texture ? EndfieldHudOpacity(EndfieldHudPosition(stage_input.position.xy)) : 1.f;
+    // RenoDX code start: identify the pre-marker minimap background by sampled
+    // content. Atlas packing changes between launches; screen layout does not.
+    if (texture_width == 2048 && texture_height == 1024
+        && shader_injection.hud_viewport_height > 0.f) {
+        float2 dx = ddx(_4), dy = ddy(_4);
+        float determinant = dx.x * dy.y - dx.y * dy.x;
+        if (abs(determinant) > 1e-10f) {
+            float scale = EndfieldHudScale(shader_injection.hud_viewport_height, shader_injection.ui_aspect_ratio);
+            float2 logical_position = EndfieldHudPosition(stage_input.position.xy) * scale;
+            if (all(logical_position > float2(50.f, 50.f))
+                && all(logical_position < float2(280.f, 290.f))) {
+                uint signature = 0u;
+                for (uint index = 0u; index < 16u; ++index) {
+                    float2 anchor = EndfieldHudPosition(
+                        float2(80.f + (index % 4u) * 56.f, 80.f + (index / 4u) * 56.f) / scale);
+                    float2 offset = anchor - stage_input.position.xy;
+                    float4 texel = _16.SampleLevel(_17, _4 + dx * offset.x + dy * offset.y, 0.f);
+                    uint value = uint(round(saturate(dot(texel.rgb, float3(.333333f, .333333f, .333333f)) * texel.a) * 3.f));
+                    signature |= value << (index * 2u);
+                }
+                if (signature == 0x143D3D00u) {
+                    opacity = shader_injection.hud_minimap_opacity;
+                }
+            }
+            // Atlas packing changes between launches. Match sampled glyph content instead.
+            // Match whole sprites; large dialogue gradients cannot match these derivatives.
+            if ((uint(shader_injection.hud_draw_enabled) & 30u) != 0u
+                && shader_injection.ui_aspect_ratio > 0.f
+                && abs(abs(dx.x) / scale - 0.00061035f) < 0.00003f
+                && abs(abs(dy.y) / scale - 0.0012207f) < 0.00006f
+                && abs(dx.y) < 1e-6f && abs(dy.x) < 1e-6f) {
+                const uint signatures[8] = {0x0C03FFFFu, 0x31010100u, 0xFC3D0CE3u, 0x10380000u,
+                                            0x030000EFu, 0x2C000000u, 0x010F3F03u, 0x28590000u};
+                const float2 screen_anchors[8] = {
+                    float2(75.5f, 85.5f), float2(75.5f, 40.5f),
+                    float2(282.5f, 90.5f), float2(282.5f, 45.5f),
+                    float2(171.5f, 90.5f), float2(171.5f, 45.5f),
+                    float2(67.5f, 90.5f), float2(67.5f, 45.5f)
+                };
+                for (uint index = 0; index < 8; ++index) {
+                    if ((uint(shader_injection.hud_draw_enabled) & (2u << (index / 2u))) == 0u) continue;
+                    float2 expected = screen_anchors[index] * 0.75f;
+                    if (index >= 2u) expected.x = shader_injection.hud_viewport_height / shader_injection.ui_aspect_ratio * scale - expected.x;
+                    float2 logical_position = EndfieldHudPosition(stage_input.position.xy) * scale;
+                    if (any(abs(logical_position - expected) > float2(40.f, 32.f))) continue;
+                    uint signature = 0u;
+                    for (uint sample_index = 0; sample_index < 16; ++sample_index) {
+                        float2 sample_position = (expected + float2(int(sample_index % 4u) * 6 - 9,
+                                                                 int(sample_index / 4u) * 6 - 9)) / scale;
+                        sample_position = EndfieldHudPosition(sample_position);
+                        float2 offset = sample_position - stage_input.position.xy;
+                        float4 texel = _16.SampleLevel(_17, _4 + dx * offset.x + dy * offset.y, 0.f);
+                        uint value = uint(round(saturate(dot(texel.rgb, float3(.333333f, .333333f, .333333f)) * texel.a) * 3.f));
+                        signature |= value << (sample_index * 2u);
+                    }
+                    if (signature == signatures[index]) {
+                        opacity = 0.f;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    // Background artwork extends beyond the text/button hit areas. Apply its
+    // own coverage without enlarging hover targets or revealing the whole fade
+    // when one nearby button is hovered. The title strip is a separate texture.
+    float scale = EndfieldHudScale(shader_injection.hud_viewport_height, shader_injection.ui_aspect_ratio);
+    float2 background_position = EndfieldHudPosition(stage_input.position.xy) * scale;
+    if ((uint(shader_injection.hud_draw_enabled) & 1u) != 0u
+        && background_position.x < 930.f
+        && background_position.y >= 180.f && background_position.y < 630.f
+        && ((texture_width == 728u && texture_height == 68u)
+            || (texture_width == 2048u && texture_height == 1024u
+                && (length(ddx(_4) * float2(2048.f, 1024.f)) < 0.6f * scale
+                    || length(ddy(_4) * float2(2048.f, 1024.f)) < 0.6f * scale)))) {
+        opacity = shader_injection.hud_quest_opacity;
+    }
+    // The location announcement stretches a 40-texel-wide atlas strip across
+    // the screen (2400 x 500 UI units in the geometry capture). It is not HUD
+    // artwork: preserve the entire strip, including where quest masks overlap.
+    // Use texels per logical pixel so atlas relocation and resolution do not
+    // change this classification. Ordinary HUD sprites and quest nine-slices
+    // have substantially denser horizontal sampling. The Explore button's
+    // nine-slice center stretches a near-constant column even further, so a
+    // lower bound is also required to keep that center in the HUD mask.
+    float2 atlas_dx = ddx(_4) * float2(texture_width, texture_height);
+    float2 atlas_dy = ddy(_4) * float2(texture_width, texture_height);
+    float horizontal_screen_texels = length(atlas_dx) * shader_injection.hud_viewport_height
+        / max(shader_injection.ui_aspect_ratio, 0.001f);
+    if (texture_width == 2048u && texture_height == 1024u
+        && horizontal_screen_texels > 28.f && horizontal_screen_texels < 56.f
+        && length(atlas_dy) > 0.6f * scale
+        && abs(atlas_dx.y) < 0.001f * scale
+        && abs(atlas_dy.x) < 0.001f * scale) {
+        opacity = 1.f;
+    }
+    _7 *= opacity;
+    // RenoDX code end
     stage_output._7 = _7;
     return stage_output;
 }
