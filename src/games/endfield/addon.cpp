@@ -2592,10 +2592,6 @@ void OnPresent(reshade::api::command_queue* queue,
   }
   if (endfield::frame_generation::installed.load()) endfield::frame_generation::OnPresent(swapchain, &swap_chain_injection);
 
-  if (device->get_api() == reshade::api::device_api::opengl) {
-    shader_injection.custom_flip_uv_y = 1.f;
-  }
-
   if (bb.type != reshade::api::resource_type::unknown) {
     shader_injection.ui_aspect_ratio = static_cast<float>(bb.texture.height) / static_cast<float>(bb.texture.width);
   }
@@ -2890,7 +2886,6 @@ BOOL APIENTRY DllMain(HMODULE h_module, DWORD fdw_reason, LPVOID lpv_reserved) {
         renodx::mods::swapchain::set_color_space = true;
         renodx::mods::swapchain::device_proxy_wait_idle_source = false;
         renodx::mods::swapchain::device_proxy_wait_idle_destination = false;
-        shader_injection.custom_flip_uv_y = 0.f;
         reshade::register_event<reshade::addon_event::present>(OnPresent);
         reshade::register_event<reshade::addon_event::reshade_begin_effects>(OnReshadeBeginEffects);
         reshade::register_event<reshade::addon_event::reshade_finish_effects>(OnReshadeFinishEffects);

@@ -476,7 +476,7 @@ float3 ApplyPsychoVGrading(float3 graded) {
       0.26545990f.xxx, anchor_out.xxx,
       0.f, 1.f,
       renodx::tonemap::psychov::CUSTOM_PSYCHO31_TARGET_GAMUT_BT2020,
-      1.5f,
+      1.f,
       1.f, 0.5f, 0.f,
       renodx::tonemap::psychov::PSYCHO30_SOURCE_BOUNDARY_AP1, 1.f);
   if (shader_injection.tone_map_hue_shift != 0.f || shader_injection.tone_map_blowout != 0.f) {
