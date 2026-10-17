@@ -2603,9 +2603,8 @@ void OnPresent(reshade::api::command_queue* queue,
     renodx::utils::settings::UpdateSetting("SwapChainGammaCorrection", 1.f);
   } else if (pending_grading_preset == 0) {
     renodx::utils::settings::UpdateSetting("ToneMapType", 0.f);
-  } else if (pending_grading_preset == 2) {
-    renodx::utils::settings::UpdateSetting("ToneMapType", 2.f);
-  } else if (pending_grading_preset == 1 && shader_injection.tone_map_type == 0.f) {
+  } else if ((pending_grading_preset == 1 || pending_grading_preset == 2)
+             && shader_injection.tone_map_type == 0.f) {
     renodx::utils::settings::UpdateSetting("ToneMapType", 2.f);
   }
 
@@ -2678,9 +2677,14 @@ void OnPresent(reshade::api::command_queue* queue,
     renodx::utils::settings::UpdateSetting("ColorGradeHighlights", 60.f);
     renodx::utils::settings::UpdateSetting("ColorGradeContrast", 60.f);
     renodx::utils::settings::UpdateSetting("LUTLightness", 50.f);
-    renodx::utils::settings::UpdateSetting("ToneMapHueShift", PSYCHOV_HUE_SHIFT);
-    renodx::utils::settings::UpdateSetting("ToneMapPerChannelBlowout", PSYCHOV_PER_CHANNEL_BLOWOUT);
+    renodx::utils::settings::UpdateSetting("ToneMapHueShift", shader_injection.tone_map_type >= 2.f ? PSYCHOV_HUE_SHIFT : VANILLA_HUE_SHIFT);
+    renodx::utils::settings::UpdateSetting("ToneMapPerChannelBlowout", shader_injection.tone_map_type >= 2.f ? PSYCHOV_PER_CHANNEL_BLOWOUT : VANILLA_PER_CHANNEL_BLOWOUT);
     renodx::utils::settings::UpdateSetting("BloomStrength", 60.f);
+  }
+  if (pending_grading_preset >= 0 && !renodx::utils::settings::IsPresetOff()) {
+    // These buttons apply on present, after the overlay's automatic save.
+    renodx::utils::settings::SaveSettings();
+    renodx::utils::settings::SaveGlobalSettings();
   }
   pending_grading_preset = -1;
 
@@ -2699,6 +2703,9 @@ bool renodx_runtime_attached = false;
 
 void UseRenoDXRuntime(DWORD fdw_reason) {
   renodx::utils::settings::Use(fdw_reason, &settings, &OnPresetOff, [] {
+    // Loading a saved slot is not a manual tone-mapper change. Preserve its grade.
+    prev_tone_map_type = -1.f;
+    pending_grading_preset = -1;
     reshade::set_config_value(nullptr, "renodx", "SelectedPreset", renodx::utils::settings::preset_index);
   });
   if (fdw_reason == DLL_PROCESS_ATTACH) {
