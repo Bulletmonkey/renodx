@@ -248,7 +248,7 @@ static void Configure(renodx::utils::settings::Settings* settings) {
       .value_type = renodx::utils::settings::SettingValueType::CUSTOM,
       .can_reset = false,
       .label = "HUD hiding and reveal",
-      .section = "HUD: Hide UI",
+      .section = "HUD: Hide UI (Experimental)",
       .tooltip = "Quest Log Minimap Map Buttons Menu Buttons Utility Wheel Dialogue Log Hide UI Auto Skip auto-hide delay hover notification",
       .on_draw = [] {
         bool changed = false;
