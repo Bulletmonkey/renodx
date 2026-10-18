@@ -394,7 +394,10 @@ void ApplySwapChainEncodingTarget(float encoding_value) {
   } else if (is_scrgb) {
     renodx::mods::swapchain::target_format = reshade::api::format::r16g16b16a16_float;
   } else {
-    renodx::mods::swapchain::target_format = reshade::api::format::r8g8b8a8_unorm;
+    // SDR: keep the surface format the game negotiated. Under winevulkan the surface offers only
+    // B8G8R8A8 (Player.log "supported format: 44/50"); forcing R8G8B8A8 here made the presenter write
+    // BGRA into an RGBA image, swapping red and blue on screen (2026-10-17, Linux/Proton).
+    renodx::mods::swapchain::target_format = reshade::api::format::b8g8r8a8_unorm;
   }
   renodx::mods::swapchain::target_color_space = GetSwapChainColorSpace(encoding_value);
 
